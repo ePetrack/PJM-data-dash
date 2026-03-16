@@ -11,14 +11,15 @@ pjm_dash:
         - httpfs
         - json
 
-    # prod: reads Parquet from the data/ directory (populated by fetch_pjm.py)
+    # prod: writes to a persistent DuckDB file so export_duckdb.py can attach
+    # and read the mart tables after dbt exits.
+    # Override DBT_PATH in the environment (GitHub Actions sets this).
     prod:
       type: duckdb
-      path: ':memory:'
+      path: "{{ env_var('DBT_PATH', '/tmp/pjm_dash.duckdb') }}"
       threads: 4
       extensions:
         - parquet
         - httpfs
       settings:
-        # Data directory — override with DATA_DIR env var in CI
         data_dir: "{{ env_var('DATA_DIR', 'data') }}"

@@ -47,6 +47,27 @@
   .chart-card.wide { grid-column: span 2; }
 
   #grain-indicator { font-size: 11px; color: var(--yellow); background: #2d2207; border: 1px solid #5c4a00; border-radius: 4px; padding: 2px 8px; align-self: center; }
+  #freshness { font-size: 11px; color: var(--muted); }
+
+  /* Per-chart loading overlay */
+  .chart-card { position: relative; }
+  .chart-overlay {
+    display: none;
+    position: absolute; inset: 0;
+    background: rgba(13,17,23,0.75);
+    border-radius: 8px;
+    align-items: center; justify-content: center;
+    font-size: 12px; color: var(--muted);
+    z-index: 10;
+  }
+  .chart-overlay.visible { display: flex; }
+  .chart-overlay.error-state { color: var(--red); }
+
+  /* No-data placeholder inside chart area */
+  .no-data-msg {
+    display: flex; align-items: center; justify-content: center;
+    height: 280px; color: var(--muted); font-size: 13px;
+  }
 
   @media (max-width: 800px) {
     .charts { grid-template-columns: 1fr; }
@@ -60,6 +81,7 @@
   <h1>PJM Market Dashboard</h1>
   <span id="grain-indicator">loading...</span>
   <span style="flex:1"></span>
+  <span id="freshness"></span>
   <span id="status">Initialising...</span>
 </header>
 
@@ -94,18 +116,22 @@
   <div class="chart-card wide">
     <h2>DA vs RT LMP — $/MWh</h2>
     <div class="chart" id="chart-lmp"></div>
+    <div class="chart-overlay" id="overlay-lmp">Loading…</div>
   </div>
   <div class="chart-card">
     <h2>DA–RT Spread — $/MWh</h2>
     <div class="chart" id="chart-spread"></div>
+    <div class="chart-overlay" id="overlay-spread">Loading…</div>
   </div>
   <div class="chart-card">
     <h2>Load Actual vs Forecast — MW (DUQ)</h2>
     <div class="chart" id="chart-load"></div>
+    <div class="chart-overlay" id="overlay-load">Loading…</div>
   </div>
   <div class="chart-card">
     <h2>Price Duration Curve — DA LMP</h2>
     <div class="chart" id="chart-pdc"></div>
+    <div class="chart-overlay" id="overlay-pdc">Loading…</div>
   </div>
 </div>
 
@@ -378,6 +404,7 @@ async function loadData() {
   const diff   = daysDiff(from, to);
 
   setStatus("loading", "Loading data…");
+  ["lmp", "spread", "load", "pdc"].forEach(id => setOverlay(id, "loading"));
 
   await ensureDataLoaded(from, to);
 
@@ -424,13 +451,19 @@ async function loadData() {
     `);
 
     if (lmpRows.length === 0) {
+      ["lmp", "spread", "pdc"].forEach(id => setOverlay(id, "no-data"));
+      setOverlay("load", null);
       setStatus("error", "No LMP rows for selected range");
       return;
     }
 
-    renderLMPChart(lmpRows);
-    renderSpreadChart(lmpRows);
-    renderPDCChart(lmpRows.map(r => r.da));
+    renderLMPChart(lmpRows);    setOverlay("lmp",    null);
+    renderSpreadChart(lmpRows); setOverlay("spread", null);
+    renderPDCChart(lmpRows.map(r => r.da)); setOverlay("pdc", null);
+
+    // Show data freshness (latest timestamp in the result set)
+    const latestTs = lmpRows.at(-1)?.ts;
+    setFreshness(latestTs);
 
     const avgDA   = lmpRows.reduce((s, r) => s + (r.da || 0), 0) / lmpRows.filter(r => r.da !== null).length;
     const avgRT   = lmpRows.reduce((s, r) => s + (r.rt || 0), 0) / lmpRows.filter(r => r.rt !== null).length;
@@ -453,6 +486,7 @@ async function loadData() {
         limit 5000
       `);
       renderLoadChart(loadRows);
+      setOverlay("load", loadRows.length === 0 ? "no-data" : null);
       const peakLoad = Math.max(...loadRows.map(r => r.actual || 0));
       kpi("kpi-load", peakLoad, 0);
 
@@ -461,6 +495,7 @@ async function loadData() {
       kpi("kpi-ferr", mape);
     } else {
       renderLoadChart([]);
+      setOverlay("load", "no-data", "Load data not available for this range");
       document.getElementById("kpi-load").textContent = "—";
       document.getElementById("kpi-ferr").textContent = "—";
     }
@@ -469,17 +504,40 @@ async function loadData() {
   } catch (e) {
     console.error(e);
     setStatus("error", e.message);
+    ["lmp", "spread", "load", "pdc"].forEach(id => setOverlay(id, "error", e.message));
   }
 }
 
 // ---------------------------------------------------------------------------
-// Status helpers
+// Status + overlay helpers
 // ---------------------------------------------------------------------------
 
 function setStatus(cls, msg) {
   const el = document.getElementById("status");
   el.className = cls;
   el.textContent = msg;
+}
+
+function setOverlay(chartId, state, msg) {
+  // state: null (hide) | "loading" | "error" | "no-data"
+  const el = document.getElementById(`overlay-${chartId}`);
+  if (!el) return;
+  if (!state) {
+    el.classList.remove("visible", "error-state");
+    el.textContent = "";
+  } else {
+    el.classList.add("visible");
+    el.classList.toggle("error-state", state === "error");
+    el.textContent = msg || (state === "loading" ? "Loading…" : state === "no-data" ? "No data for this range" : "Error");
+  }
+}
+
+function setFreshness(latestTs) {
+  const el = document.getElementById("freshness");
+  if (!el) return;
+  if (!latestTs) { el.textContent = ""; return; }
+  const d = new Date(latestTs);
+  el.textContent = `Data through ${d.toLocaleDateString()} ${d.toLocaleTimeString([], {hour:"2-digit",minute:"2-digit"})} EPT`;
 }
 
 // ---------------------------------------------------------------------------
