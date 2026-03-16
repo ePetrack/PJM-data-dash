@@ -1,0 +1,103 @@
+name: Historical backfill (EIA)
+
+# One-time (or as-needed) workflow to bootstrap the data/ branch with
+# 2+ years of PJM DA LMP history from EIA's no-auth bulk CSV downloads.
+#
+# Run this manually once after forking the repo, then let ingest.yml
+# handle ongoing daily updates from the PJM Data Miner 2 API.
+#
+# After the backfill completes, trigger transform.yml to rebuild the
+# dashboard DuckDB files from the full history.
+
+on:
+  workflow_dispatch:
+    inputs:
+      years:
+        description: "Space-separated years to backfill (e.g. '2022 2023 2024'). Defaults to all available years."
+        default: ""
+      types:
+        description: "File types: zones, hubs, rt_zones (space-separated)"
+        default: "zones hubs"
+      include_rt:
+        description: "Also download RT 5-min zone files (large, quarterly)"
+        type: boolean
+        default: false
+
+jobs:
+  backfill:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+
+    steps:
+      - name: Checkout main (scripts live here)
+        uses: actions/checkout@v4
+        with:
+          ref: main
+          path: repo
+
+      - name: Initialise or checkout data branch
+        run: |
+          git clone "${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}.git" data-branch \
+            --branch data --depth 1 2>/dev/null \
+          || (
+            git clone "${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}.git" data-branch --depth 1
+            cd data-branch
+            git checkout --orphan data
+            git rm -rf . --quiet || true
+            mkdir -p data
+            touch data/.gitkeep
+            git add data/.gitkeep
+            git -c user.name="github-actions[bot]" \
+                -c user.email="github-actions[bot]@users.noreply.github.com" \
+                commit -m "init: data branch"
+            git push origin data
+          )
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+
+      - name: Install dependencies
+        run: pip install requests pandas pyarrow
+
+      - name: Run EIA backfill
+        run: |
+          YEARS_ARG=""
+          if [ -n "${{ github.event.inputs.years }}" ]; then
+            YEARS_ARG="--years ${{ github.event.inputs.years }}"
+          fi
+
+          TYPES_ARG="--types ${{ github.event.inputs.types }}"
+
+          RT_ARG=""
+          if [ "${{ github.event.inputs.include_rt }}" = "true" ]; then
+            RT_ARG="--include-rt"
+          fi
+
+          python repo/scripts/backfill_eia.py \
+            $YEARS_ARG \
+            $TYPES_ARG \
+            $RT_ARG \
+            --output data-branch/data/
+
+      - name: Commit Parquet files to data branch
+        working-directory: data-branch
+        run: |
+          git config user.name  "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add data/
+          git diff --cached --quiet && echo "Nothing to commit" && exit 0
+          git commit -m "backfill: EIA historical data $(date -u +%Y-%m-%d)"
+          git push origin data
+
+      - name: Trigger transform to rebuild dashboard
+        uses: actions/github-script@v7
+        with:
+          script: |
+            github.rest.actions.createWorkflowDispatch({
+              owner: context.repo.owner,
+              repo:  context.repo.repo,
+              workflow_id: "transform.yml",
+              ref: "main",
+            })

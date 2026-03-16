@@ -1,0 +1,55 @@
+version: 2
+
+models:
+  - name: mart_lmps
+    description: Merged DA + RT hourly LMP fact table
+    columns:
+      - name: hour_beginning_utc
+        description: Hour start time in UTC
+        tests:
+          - not_null
+      - name: pnode_id
+        description: PJM pricing node ID
+        tests:
+          - not_null
+      - name: total_lmp_da
+        description: Day-ahead total LMP ($/MWh)
+        tests:
+          - not_null
+
+  - name: mart_load
+    description: Hourly load actual vs forecast by zone
+    columns:
+      - name: hour_beginning_utc
+        description: Hour start time in UTC
+        tests:
+          - not_null
+      - name: zone
+        description: PJM zone name
+        tests:
+          - not_null
+      - name: actual_load_mw
+        description: Metered load in MW
+        tests:
+          - not_null
+
+  - name: dim_pnode
+    description: PNode reference dimension
+    columns:
+      - name: pnode_id
+        description: PJM pricing node ID (primary key)
+        tests:
+          - not_null
+          - unique
+      - name: pnode_name
+        tests:
+          - not_null
+
+  - name: dim_calendar
+    description: Hourly calendar spine
+    columns:
+      - name: hour_beginning_ept
+        description: Hour start in Eastern Prevailing Time (primary key)
+        tests:
+          - not_null
+          - unique

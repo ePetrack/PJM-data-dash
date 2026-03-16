@@ -1,0 +1,96 @@
+name: Transform and deploy
+
+on:
+  workflow_dispatch:
+  schedule:
+    # Full daily rebuild at 08:00 UTC (after overnight settlement data is published)
+    - cron: "0 8 * * *"
+
+concurrency:
+  group: transform
+  cancel-in-progress: false
+
+# Required for the actions/deploy-pages step
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+jobs:
+  transform:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    environment:
+      name: github-pages
+      url: ${{ steps.deploy.outputs.page_url }}
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: main
+
+      # Checkout data branch into data/ subdirectory.
+      # If the branch doesn't exist yet (no backfill run), skip transform steps
+      # but still deploy the dashboard shell so the site is live.
+      - name: Checkout data branch
+        id: checkout-data
+        run: |
+          git clone "${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}.git" data \
+            --branch data --depth 1 2>/dev/null \
+          && echo "has_data=true" >> "$GITHUB_OUTPUT" \
+          || (echo "has_data=false" >> "$GITHUB_OUTPUT" && \
+              echo "::warning::data branch not found — run the backfill workflow first")
+
+      - name: Check for Parquet files
+        id: check-parquet
+        if: steps.checkout-data.outputs.has_data == 'true'
+        run: |
+          count=$(find data/data -name "*.parquet" 2>/dev/null | wc -l)
+          echo "parquet_count=$count" >> "$GITHUB_OUTPUT"
+          if [ "$count" -eq 0 ]; then
+            echo "::warning::No Parquet files in data branch — run the backfill workflow first"
+          fi
+
+      - uses: actions/setup-python@v5
+        if: steps.check-parquet.outputs.parquet_count > 0
+        with:
+          python-version: "3.11"
+          cache: pip
+
+      - name: Install dependencies
+        if: steps.check-parquet.outputs.parquet_count > 0
+        run: pip install dbt-duckdb pandas pyarrow duckdb
+
+      - name: dbt run
+        if: steps.check-parquet.outputs.parquet_count > 0
+        run: dbt run --target prod
+        env:
+          DATA_DIR: data/data
+          DBT_PATH: /tmp/pjm_dash.duckdb
+
+      - name: dbt test (daily scheduled runs only)
+        if: steps.check-parquet.outputs.parquet_count > 0 && github.event_name == 'schedule'
+        run: dbt test --target prod
+        env:
+          DATA_DIR: data/data
+          DBT_PATH: /tmp/pjm_dash.duckdb
+
+      - name: Export dashboard DuckDB files
+        if: steps.check-parquet.outputs.parquet_count > 0
+        run: |
+          python scripts/export_duckdb.py \
+            --dbt-path /tmp/pjm_dash.duckdb \
+            --data-dir data/data \
+            --output dashboard/
+
+      # Always deploy the dashboard/ directory — even if there's no data yet,
+      # the shell (HTML + service worker) will be live and show "no data" overlays
+      # until the backfill runs.
+      - name: Upload Pages artifact
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: ./dashboard
+
+      - name: Deploy to GitHub Pages
+        id: deploy
+        uses: actions/deploy-pages@v4
