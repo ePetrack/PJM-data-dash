@@ -1,0 +1,61 @@
+name: Transform and deploy
+
+on:
+  workflow_dispatch:
+  schedule:
+    # Full daily rebuild at 08:00 UTC (after overnight settlement data is published)
+    - cron: "0 8 * * *"
+
+concurrency:
+  group: transform
+  cancel-in-progress: false
+
+jobs:
+  transform:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: master
+
+      # Check out the data branch into a subdirectory so dbt can read it
+      - name: Checkout data branch
+        uses: actions/checkout@v4
+        with:
+          ref: data
+          path: data
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+
+      - name: Install dependencies
+        run: pip install dbt-duckdb pandas pyarrow duckdb
+
+      - name: dbt run
+        run: dbt run --target prod
+        env:
+          DATA_DIR: data/data
+
+      - name: dbt test (daily only — skip during intraday runs)
+        # Run tests on the scheduled daily job; skip on workflow_dispatch
+        if: github.event_name == 'schedule'
+        run: dbt test --target prod
+        env:
+          DATA_DIR: data/data
+
+      - name: Export dashboard DuckDB files
+        run: python scripts/export_duckdb.py --data-dir data/data --output dashboard/
+        env:
+          DATA_DIR: data/data
+
+      - name: Deploy to GitHub Pages
+        uses: peaceiris/actions-gh-pages@v4
+        with:
+          github_token: ${{ secrets.GITHUB_TOKEN }}
+          publish_dir: ./dashboard
+          publish_branch: gh-pages
+          keep_files: true
+          commit_message: "deploy: $(date -u +%Y-%m-%dT%H:%M)Z"

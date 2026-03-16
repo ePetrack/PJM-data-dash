@@ -1,0 +1,24 @@
+pjm_dash:
+  target: ci
+  outputs:
+    # CI: pure in-memory DuckDB, no external files needed
+    ci:
+      type: duckdb
+      path: ':memory:'
+      threads: 1
+      extensions:
+        - parquet
+        - httpfs
+        - json
+
+    # prod: reads Parquet from the data/ directory (populated by fetch_pjm.py)
+    prod:
+      type: duckdb
+      path: ':memory:'
+      threads: 4
+      extensions:
+        - parquet
+        - httpfs
+      settings:
+        # Data directory — override with DATA_DIR env var in CI
+        data_dir: "{{ env_var('DATA_DIR', 'data') }}"

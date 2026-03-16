@@ -1,0 +1,67 @@
+name: Ingest PJM data
+
+on:
+  schedule:
+    # Every 30 minutes (PJM RT data updates every 5 min; hourly LMPs every hour)
+    - cron: "*/30 * * * *"
+  workflow_dispatch:
+    inputs:
+      date:
+        description: "Date to fetch (YYYY-MM-DD or 'yesterday')"
+        default: "yesterday"
+      to_date:
+        description: "End date for range fetch (optional)"
+        default: ""
+
+concurrency:
+  group: ingest
+  cancel-in-progress: false
+
+jobs:
+  fetch:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: data          # raw data lives on the `data` branch
+          fetch-depth: 1
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+
+      - name: Install dependencies
+        run: pip install requests pandas pyarrow
+
+      - name: Fetch PJM data
+        run: |
+          DATE="${{ github.event.inputs.date || 'yesterday' }}"
+          TO="${{ github.event.inputs.to_date }}"
+          if [ -n "$TO" ]; then
+            python scripts/fetch_pjm.py --date "$DATE" --to "$TO" --output data/
+          else
+            python scripts/fetch_pjm.py --date "$DATE" --output data/
+          fi
+        env:
+          PJM_API_KEY: ${{ secrets.PJM_API_KEY }}   # optional — falls back to anonymous key
+
+      - name: Commit Parquet files
+        run: |
+          git config user.name  "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add data/
+          git diff --cached --quiet || git commit -m "ingest: $(date -u +%Y-%m-%dT%H:%M)Z"
+          git push origin data
+
+      - name: Trigger transform workflow
+        uses: actions/github-script@v7
+        with:
+          script: |
+            github.rest.actions.createWorkflowDispatch({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              workflow_id: 'transform.yml',
+              ref: 'master',
+            })

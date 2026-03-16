@@ -1,0 +1,30 @@
+name: CI
+
+on:
+  push:
+    branches: [master, main]
+  pull_request:
+
+jobs:
+  dbt-build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+
+      - name: Install dependencies
+        run: pip install dbt-duckdb
+
+      - name: dbt build (in-memory, no live data)
+        # ci profile uses :memory: DuckDB — validates all SQL without any
+        # external data files or API access
+        run: dbt build --target ci
+        env:
+          DATA_DIR: "data"
+
+      - name: dbt docs generate
+        run: dbt docs generate --target ci

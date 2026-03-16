@@ -1,0 +1,511 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>PJM Data Dashboard</title>
+<script src="https://cdn.jsdelivr.net/npm/echarts@5.5.1/dist/echarts.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/@duckdb/duckdb-wasm@1.29.0/dist/duckdb-mvp.js"></script>
+<style>
+  :root {
+    --bg:      #0d1117;
+    --surface: #161b22;
+    --border:  #30363d;
+    --text:    #e6edf3;
+    --muted:   #8b949e;
+    --accent:  #58a6ff;
+    --green:   #3fb950;
+    --red:     #f85149;
+    --yellow:  #d29922;
+  }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body { background: var(--bg); color: var(--text); font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; font-size: 14px; }
+  header { background: var(--surface); border-bottom: 1px solid var(--border); padding: 12px 24px; display: flex; align-items: center; gap: 16px; }
+  header h1 { font-size: 16px; font-weight: 600; }
+  #status { font-size: 12px; color: var(--muted); }
+  #status.ready { color: var(--green); }
+  #status.error { color: var(--red); }
+
+  .controls { display: flex; flex-wrap: wrap; gap: 12px; padding: 16px 24px; border-bottom: 1px solid var(--border); background: var(--surface); }
+  .control-group { display: flex; flex-direction: column; gap: 4px; }
+  .control-group label { font-size: 11px; color: var(--muted); text-transform: uppercase; letter-spacing: 0.5px; }
+  select, input[type=date] { background: var(--bg); border: 1px solid var(--border); color: var(--text); padding: 6px 10px; border-radius: 6px; font-size: 13px; cursor: pointer; }
+  select:focus, input:focus { outline: 1px solid var(--accent); border-color: var(--accent); }
+  button { background: var(--accent); color: #0d1117; border: none; padding: 7px 16px; border-radius: 6px; font-size: 13px; font-weight: 600; cursor: pointer; align-self: flex-end; }
+  button:hover { opacity: 0.85; }
+
+  .kpis { display: grid; grid-template-columns: repeat(auto-fill, minmax(160px, 1fr)); gap: 12px; padding: 16px 24px; }
+  .kpi { background: var(--surface); border: 1px solid var(--border); border-radius: 8px; padding: 12px 16px; }
+  .kpi .label { font-size: 11px; color: var(--muted); text-transform: uppercase; letter-spacing: 0.5px; margin-bottom: 4px; }
+  .kpi .value { font-size: 22px; font-weight: 700; }
+  .kpi .sub   { font-size: 11px; color: var(--muted); margin-top: 2px; }
+
+  .charts { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; padding: 0 24px 24px; }
+  .chart-card { background: var(--surface); border: 1px solid var(--border); border-radius: 8px; padding: 16px; }
+  .chart-card h2 { font-size: 13px; font-weight: 600; color: var(--muted); margin-bottom: 12px; }
+  .chart-card .chart { width: 100%; height: 280px; }
+  .chart-card.wide { grid-column: span 2; }
+
+  #grain-indicator { font-size: 11px; color: var(--yellow); background: #2d2207; border: 1px solid #5c4a00; border-radius: 4px; padding: 2px 8px; align-self: center; }
+
+  @media (max-width: 800px) {
+    .charts { grid-template-columns: 1fr; }
+    .chart-card.wide { grid-column: span 1; }
+  }
+</style>
+</head>
+<body>
+
+<header>
+  <h1>PJM Market Dashboard</h1>
+  <span id="grain-indicator">loading...</span>
+  <span style="flex:1"></span>
+  <span id="status">Initialising...</span>
+</header>
+
+<div class="controls">
+  <div class="control-group">
+    <label>From</label>
+    <input type="date" id="date-from">
+  </div>
+  <div class="control-group">
+    <label>To</label>
+    <input type="date" id="date-to">
+  </div>
+  <div class="control-group">
+    <label>Location</label>
+    <select id="pnode-filter">
+      <option value="ZONE_DUQ">DUQ Zone</option>
+      <option value="HUB_51217">Western Hub</option>
+    </select>
+  </div>
+  <button id="apply-btn">Apply</button>
+</div>
+
+<div class="kpis">
+  <div class="kpi"><div class="label">Avg DA LMP</div><div class="value" id="kpi-da">—</div><div class="sub">$/MWh</div></div>
+  <div class="kpi"><div class="label">Avg RT LMP</div><div class="value" id="kpi-rt">—</div><div class="sub">$/MWh</div></div>
+  <div class="kpi"><div class="label">DA–RT Spread</div><div class="value" id="kpi-spread">—</div><div class="sub">$/MWh avg</div></div>
+  <div class="kpi"><div class="label">Peak Load</div><div class="value" id="kpi-load">—</div><div class="sub">MW (DUQ)</div></div>
+  <div class="kpi"><div class="label">Forecast Error</div><div class="value" id="kpi-ferr">—</div><div class="sub">% avg |error|</div></div>
+</div>
+
+<div class="charts">
+  <div class="chart-card wide">
+    <h2>DA vs RT LMP — $/MWh</h2>
+    <div class="chart" id="chart-lmp"></div>
+  </div>
+  <div class="chart-card">
+    <h2>DA–RT Spread — $/MWh</h2>
+    <div class="chart" id="chart-spread"></div>
+  </div>
+  <div class="chart-card">
+    <h2>Load Actual vs Forecast — MW (DUQ)</h2>
+    <div class="chart" id="chart-load"></div>
+  </div>
+  <div class="chart-card">
+    <h2>Price Duration Curve — DA LMP</h2>
+    <div class="chart" id="chart-pdc"></div>
+  </div>
+</div>
+
+<script type="module">
+// ---------------------------------------------------------------------------
+// DuckDB-WASM setup
+// ---------------------------------------------------------------------------
+
+const JSDELIVR_BUNDLES = {
+  mvp: {
+    mainModule: "https://cdn.jsdelivr.net/npm/@duckdb/duckdb-wasm@1.29.0/dist/duckdb-mvp.wasm",
+    mainWorker: "https://cdn.jsdelivr.net/npm/@duckdb/duckdb-wasm@1.29.0/dist/duckdb-browser-mvp.worker.js",
+  },
+  eh:  {
+    mainModule: "https://cdn.jsdelivr.net/npm/@duckdb/duckdb-wasm@1.29.0/dist/duckdb-eh.wasm",
+    mainWorker: "https://cdn.jsdelivr.net/npm/@duckdb/duckdb-wasm@1.29.0/dist/duckdb-browser-eh.worker.js",
+  },
+};
+
+const DATA_BASE = "./";  // .duckdb files sit next to index.html
+
+let db, conn;
+
+async function initDB() {
+  setStatus("loading", "Loading DuckDB…");
+  const duckdb = await import("https://cdn.jsdelivr.net/npm/@duckdb/duckdb-wasm@1.29.0/dist/duckdb-esm.js");
+  const bundle = await duckdb.selectBundle(JSDELIVR_BUNDLES);
+  const workerUrl = URL.createObjectURL(
+    new Blob([`importScripts("${bundle.mainWorker}");`], { type: "text/javascript" })
+  );
+  const worker = new Worker(workerUrl);
+  const logger = new duckdb.ConsoleLogger();
+  db = new duckdb.AsyncDuckDB(logger, worker);
+  await db.instantiate(bundle.mainModule);
+  conn = await db.connect();
+  setStatus("ready", "Connected");
+}
+
+// ---------------------------------------------------------------------------
+// File loader with OPFS cache
+// ---------------------------------------------------------------------------
+
+async function getOrFetchFile(filename) {
+  const url = DATA_BASE + filename;
+  try {
+    const root = await navigator.storage.getDirectory();
+    const fh = await root.getFileHandle(filename, { create: true });
+    const existing = await fh.getFile();
+    if (existing.size > 0) {
+      return new Uint8Array(await existing.arrayBuffer());
+    }
+    const resp = await fetch(url);
+    if (!resp.ok) throw new Error(`${resp.status} ${url}`);
+    const buf = await resp.arrayBuffer();
+    const writable = await fh.createWritable();
+    await writable.write(buf);
+    await writable.close();
+    return new Uint8Array(buf);
+  } catch {
+    // OPFS not available — fetch directly
+    const resp = await fetch(url);
+    if (!resp.ok) throw new Error(`${resp.status} ${url}`);
+    return new Uint8Array(await resp.arrayBuffer());
+  }
+}
+
+async function attachFile(filename, alias) {
+  const buf = await getOrFetchFile(filename);
+  await db.registerFileBuffer(filename, buf);
+  await conn.query(`attach '${filename}' as ${alias} (read_only)`);
+}
+
+// ---------------------------------------------------------------------------
+// Date helpers
+// ---------------------------------------------------------------------------
+
+function daysBack(n) {
+  const d = new Date();
+  d.setDate(d.getDate() - n);
+  return d.toISOString().slice(0, 10);
+}
+
+function daysDiff(from, to) {
+  return (new Date(to) - new Date(from)) / 86400000;
+}
+
+function halfLabel(dateStr) {
+  const d = new Date(dateStr);
+  return `${d.getFullYear()}H${d.getMonth() < 6 ? 1 : 2}`;
+}
+
+function uniqueHalves(from, to) {
+  const halves = new Set();
+  let d = new Date(from);
+  const end = new Date(to);
+  while (d <= end) {
+    halves.add(halfLabel(d.toISOString().slice(0, 10)));
+    d.setMonth(d.getMonth() + 1);
+  }
+  return [...halves];
+}
+
+// ---------------------------------------------------------------------------
+// Determine data grain and load appropriate files
+// ---------------------------------------------------------------------------
+
+let loadedFiles = new Set();
+
+async function ensureDataLoaded(from, to) {
+  const diff = daysDiff(from, to);
+
+  // Always need dim
+  if (!loadedFiles.has("dim")) {
+    try {
+      await attachFile("pjm_dim.duckdb", "dim");
+      loadedFiles.add("dim");
+    } catch (e) {
+      console.warn("pjm_dim.duckdb not found:", e.message);
+    }
+  }
+
+  if (diff <= 7) {
+    // 5-min / intraday
+    document.getElementById("grain-indicator").textContent = "grain: intraday";
+    if (!loadedFiles.has("today")) {
+      try {
+        await attachFile("pjm_today.duckdb", "today");
+        loadedFiles.add("today");
+      } catch (e) {
+        console.warn("pjm_today.duckdb not found:", e.message);
+      }
+    }
+  } else if (diff <= 186) {
+    // hourly — load half-yearly files
+    document.getElementById("grain-indicator").textContent = "grain: hourly";
+    for (const half of uniqueHalves(from, to)) {
+      if (!loadedFiles.has(half)) {
+        try {
+          await attachFile(`pjm_data_${half}.duckdb`, `h${half.replace("H", "_")}`);
+          loadedFiles.add(half);
+        } catch (e) {
+          console.warn(`pjm_data_${half}.duckdb not found:`, e.message);
+        }
+      }
+    }
+  } else {
+    // daily aggregate
+    document.getElementById("grain-indicator").textContent = "grain: daily";
+    if (!loadedFiles.has("daily")) {
+      try {
+        await attachFile("pjm_daily_agg.duckdb", "daily");
+        loadedFiles.add("daily");
+      } catch (e) {
+        console.warn("pjm_daily_agg.duckdb not found:", e.message);
+      }
+    }
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Query helpers
+// ---------------------------------------------------------------------------
+
+async function query(sql) {
+  const result = await conn.query(sql);
+  return result.toArray().map(r => r.toJSON());
+}
+
+// ---------------------------------------------------------------------------
+// Charts
+// ---------------------------------------------------------------------------
+
+const darkTheme = {
+  backgroundColor: "transparent",
+  textStyle: { color: "#8b949e" },
+  axisLine:  { lineStyle: { color: "#30363d" } },
+  splitLine: { lineStyle: { color: "#21262d", type: "dashed" } },
+  tooltip:   { backgroundColor: "#161b22", borderColor: "#30363d", textStyle: { color: "#e6edf3" } },
+};
+
+function makeChart(id) {
+  const el = document.getElementById(id);
+  const c = echarts.init(el, null, { renderer: "canvas" });
+  c.setOption({ ...darkTheme, grid: { left: 60, right: 20, top: 20, bottom: 40 } });
+  return c;
+}
+
+const charts = {};
+function getChart(id) {
+  if (!charts[id]) charts[id] = makeChart(id);
+  return charts[id];
+}
+
+function renderLMPChart(rows) {
+  const times  = rows.map(r => r.ts);
+  const da     = rows.map(r => r.da !== null ? +r.da.toFixed(2) : null);
+  const rt     = rows.map(r => r.rt !== null ? +r.rt.toFixed(2) : null);
+  getChart("chart-lmp").setOption({
+    ...darkTheme,
+    tooltip: { ...darkTheme.tooltip, trigger: "axis" },
+    legend: { data: ["DA LMP", "RT LMP"], textStyle: { color: "#8b949e" } },
+    xAxis: { type: "category", data: times, axisLabel: { rotate: 30, fontSize: 10, color: "#8b949e" } },
+    yAxis: { type: "value", axisLabel: { formatter: v => `$${v}`, color: "#8b949e" } },
+    series: [
+      { name: "DA LMP", type: "line", data: da, smooth: true, lineStyle: { color: "#58a6ff", width: 2 }, symbol: "none" },
+      { name: "RT LMP", type: "line", data: rt, smooth: true, lineStyle: { color: "#3fb950", width: 1.5, type: "dashed" }, symbol: "none" },
+    ],
+  });
+}
+
+function renderSpreadChart(rows) {
+  const times  = rows.map(r => r.ts);
+  const spread = rows.map(r => r.spread !== null ? +r.spread.toFixed(2) : null);
+  const colors = spread.map(v => v === null ? "#8b949e" : v >= 0 ? "#58a6ff" : "#f85149");
+  getChart("chart-spread").setOption({
+    ...darkTheme,
+    tooltip: { ...darkTheme.tooltip, trigger: "axis", formatter: p => `${p[0].axisValue}<br/>Spread: $${p[0].data}` },
+    xAxis: { type: "category", data: times, axisLabel: { rotate: 30, fontSize: 10, color: "#8b949e" } },
+    yAxis: { type: "value", axisLabel: { formatter: v => `$${v}`, color: "#8b949e" } },
+    series: [{
+      type: "bar",
+      data: spread.map((v, i) => ({ value: v, itemStyle: { color: colors[i] } })),
+    }],
+  });
+}
+
+function renderLoadChart(rows) {
+  const times    = rows.map(r => r.ts);
+  const actual   = rows.map(r => r.actual !== null ? +r.actual.toFixed(0) : null);
+  const forecast = rows.map(r => r.forecast !== null ? +r.forecast.toFixed(0) : null);
+  getChart("chart-load").setOption({
+    ...darkTheme,
+    tooltip: { ...darkTheme.tooltip, trigger: "axis" },
+    legend: { data: ["Actual", "Forecast"], textStyle: { color: "#8b949e" } },
+    xAxis: { type: "category", data: times, axisLabel: { rotate: 30, fontSize: 10, color: "#8b949e" } },
+    yAxis: { type: "value", axisLabel: { formatter: v => `${(v/1000).toFixed(1)}k`, color: "#8b949e" } },
+    series: [
+      { name: "Actual",   type: "line", data: actual,   smooth: true, lineStyle: { color: "#3fb950", width: 2 }, symbol: "none" },
+      { name: "Forecast", type: "line", data: forecast, smooth: true, lineStyle: { color: "#d29922", width: 1.5, type: "dashed" }, symbol: "none" },
+    ],
+  });
+}
+
+function renderPDCChart(prices) {
+  const sorted = [...prices].filter(v => v !== null).sort((a, b) => b - a);
+  const pct    = sorted.map((_, i) => +(i / (sorted.length - 1) * 100).toFixed(1));
+  getChart("chart-pdc").setOption({
+    ...darkTheme,
+    tooltip: { ...darkTheme.tooltip, trigger: "axis", formatter: p => `${p[0].axisValue}% of hours<br/>$${p[0].data}/MWh` },
+    xAxis: { type: "category", data: pct, axisLabel: { formatter: v => `${v}%`, fontSize: 10, color: "#8b949e" }, name: "% of hours", nameTextStyle: { color: "#8b949e" } },
+    yAxis: { type: "value", axisLabel: { formatter: v => `$${v}`, color: "#8b949e" } },
+    series: [{ type: "line", data: sorted, smooth: false, lineStyle: { color: "#58a6ff", width: 2 }, symbol: "none", areaStyle: { color: "rgba(88,166,255,0.08)" } }],
+  });
+}
+
+// ---------------------------------------------------------------------------
+// Main data load
+// ---------------------------------------------------------------------------
+
+function kpi(id, value, decimals = 2) {
+  document.getElementById(id).textContent = value !== null && value !== undefined
+    ? Number(value).toFixed(decimals)
+    : "—";
+}
+
+async function loadData() {
+  const from   = document.getElementById("date-from").value;
+  const to     = document.getElementById("date-to").value;
+  const pnode  = document.getElementById("pnode-filter").value;
+  const diff   = daysDiff(from, to);
+
+  setStatus("loading", "Loading data…");
+
+  await ensureDataLoaded(from, to);
+
+  // Choose table + grain label
+  let lmpTable, loadTable, tsExpr;
+  if (diff <= 7 && loadedFiles.has("today")) {
+    lmpTable  = "today.rt_recent";
+    loadTable = null;
+    tsExpr    = "datetime_beginning_ept";
+  } else if (diff > 186 && loadedFiles.has("daily")) {
+    lmpTable  = "daily.lmps_daily";
+    loadTable = "daily.load_daily";
+    tsExpr    = "date_utc::text";
+  } else {
+    // Build a union of loaded half-year tables
+    const halves = uniqueHalves(from, to).filter(h => loadedFiles.has(h));
+    if (halves.length === 0) {
+      setStatus("error", "No data loaded for range");
+      return;
+    }
+    const unions = halves.map(h => `select * from h${h.replace("H","_")}.lmps`).join(" union all ");
+    lmpTable  = `(${unions})`;
+    loadTable = null;  // mart_load not exported to half-year files yet
+    tsExpr    = "hour_beginning_utc::text";
+  }
+
+  // LMP query
+  let daCol = "total_lmp_da", rtCol = "total_lmp_rt", spreadCol = "da_rt_spread";
+  if (diff > 186) {
+    daCol = "avg_lmp_da"; rtCol = "avg_lmp_rt"; spreadCol = "avg_spread";
+  }
+
+  try {
+    const lmpRows = await query(`
+      select
+        ${tsExpr} as ts,
+        cast(${daCol} as double)     as da,
+        cast(${rtCol} as double)     as rt,
+        cast(${spreadCol} as double) as spread
+      from ${lmpTable}
+      where ${tsExpr} >= '${from}' and ${tsExpr} <= '${to} 23:59'
+      order by ts
+      limit 5000
+    `);
+
+    if (lmpRows.length === 0) {
+      setStatus("error", "No LMP rows for selected range");
+      return;
+    }
+
+    renderLMPChart(lmpRows);
+    renderSpreadChart(lmpRows);
+    renderPDCChart(lmpRows.map(r => r.da));
+
+    const avgDA   = lmpRows.reduce((s, r) => s + (r.da || 0), 0) / lmpRows.filter(r => r.da !== null).length;
+    const avgRT   = lmpRows.reduce((s, r) => s + (r.rt || 0), 0) / lmpRows.filter(r => r.rt !== null).length;
+    const avgSpr  = lmpRows.reduce((s, r) => s + (r.spread || 0), 0) / lmpRows.filter(r => r.spread !== null).length;
+    kpi("kpi-da", avgDA);
+    kpi("kpi-rt", avgRT);
+    kpi("kpi-spread", avgSpr);
+
+    // Load chart
+    if (loadTable) {
+      const loadRows = await query(`
+        select
+          ${tsExpr} as ts,
+          cast(${diff > 186 ? "avg_load_mw" : "actual_load_mw"} as double)   as actual,
+          cast(${diff > 186 ? "avg_forecast_mw" : "forecast_load_mw"} as double) as forecast
+        from ${loadTable}
+        where zone = 'DUQ'
+          and ${tsExpr} >= '${from}' and ${tsExpr} <= '${to} 23:59'
+        order by ts
+        limit 5000
+      `);
+      renderLoadChart(loadRows);
+      const peakLoad = Math.max(...loadRows.map(r => r.actual || 0));
+      kpi("kpi-load", peakLoad, 0);
+
+      const errRows = loadRows.filter(r => r.actual !== null && r.forecast !== null);
+      const mape = errRows.reduce((s, r) => s + Math.abs((r.actual - r.forecast) / r.actual) * 100, 0) / errRows.length;
+      kpi("kpi-ferr", mape);
+    } else {
+      renderLoadChart([]);
+      document.getElementById("kpi-load").textContent = "—";
+      document.getElementById("kpi-ferr").textContent = "—";
+    }
+
+    setStatus("ready", `${lmpRows.length} rows`);
+  } catch (e) {
+    console.error(e);
+    setStatus("error", e.message);
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Status helpers
+// ---------------------------------------------------------------------------
+
+function setStatus(cls, msg) {
+  const el = document.getElementById("status");
+  el.className = cls;
+  el.textContent = msg;
+}
+
+// ---------------------------------------------------------------------------
+// Boot
+// ---------------------------------------------------------------------------
+
+async function boot() {
+  // Set default date range: last 7 days
+  document.getElementById("date-to").value   = daysBack(0);
+  document.getElementById("date-from").value = daysBack(7);
+
+  document.getElementById("apply-btn").addEventListener("click", loadData);
+
+  try {
+    await initDB();
+    await loadData();
+  } catch (e) {
+    setStatus("error", e.message);
+    console.error(e);
+  }
+}
+
+// Resize charts on window resize
+window.addEventListener("resize", () => Object.values(charts).forEach(c => c.resize()));
+
+boot();
+</script>
+</body>
+</html>
