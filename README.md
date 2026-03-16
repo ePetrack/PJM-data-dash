@@ -212,15 +212,32 @@ The three workflows run automatically:
 
 ---
 
+## Service worker (required for DuckDB-WASM)
+
+GitHub Pages does not allow custom response headers, but DuckDB-WASM requires
+[cross-origin isolation](https://web.dev/cross-origin-isolation-guide/) to use
+`SharedArrayBuffer`. `dashboard/coi-serviceworker.js` solves this by
+intercepting same-origin responses and injecting:
+
+```
+Cross-Origin-Embedder-Policy: credentialless
+Cross-Origin-Opener-Policy:   same-origin
+```
+
+`index.html` registers the worker before loading DuckDB and reloads once on
+first visit so the headers take effect. No server config changes are needed.
+
+---
+
 ## Implementation roadmap
 
-| Phase | Goal |
-|---|---|
-| 1 | Scaffold (this commit): dbt models, ingest script, CI workflow |
-| 2 | Historical backfill: EIA CSV → Parquet bootstrap for 2+ years of DA LMPs |
-| 3 | Dashboard v1: LMP time series + load vs forecast |
-| 4 | Dashboard v2: price duration curves, regulation prices, date range drill-down |
-| 5 | Optional: migrate Parquet storage to Apache Iceberg for scalability |
+| Phase | Status | Goal |
+|---|---|---|
+| 1 | ✅ done | Scaffold: dbt models, ingest script, CI workflow, dashboard shell |
+| 2 | 🔄 in progress | Historical backfill: EIA CSV → Parquet bootstrap for 2+ years of DA LMPs |
+| 3 | pending | Dashboard v1: wire live data, LMP time series + load vs forecast |
+| 4 | pending | Dashboard v2: price duration curves, regulation prices, date range drill-down |
+| 5 | optional | Migrate Parquet storage to Apache Iceberg for scalability |
 
 ---
 

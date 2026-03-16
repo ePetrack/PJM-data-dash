@@ -486,7 +486,21 @@ function setStatus(cls, msg) {
 // Boot
 // ---------------------------------------------------------------------------
 
+async function registerServiceWorker() {
+  if (!("serviceWorker" in navigator)) return;
+  try {
+    await navigator.serviceWorker.register("./coi-serviceworker.js");
+    // Reload once so the SW-injected COOP/COEP headers take effect.
+    // DuckDB-WASM needs crossOriginIsolated to use SharedArrayBuffer.
+    if (!crossOriginIsolated) location.reload();
+  } catch (e) {
+    console.warn("Service worker registration failed:", e);
+  }
+}
+
 async function boot() {
+  await registerServiceWorker();
+
   // Set default date range: last 7 days
   document.getElementById("date-to").value   = daysBack(0);
   document.getElementById("date-from").value = daysBack(7);
