@@ -29,10 +29,10 @@ jobs:
     timeout-minutes: 60
 
     steps:
-      - name: Checkout master (scripts live here)
+      - name: Checkout main (scripts live here)
         uses: actions/checkout@v4
         with:
-          ref: master
+          ref: main
           path: repo
 
       - name: Initialise or checkout data branch
@@ -99,5 +99,5 @@ jobs:
               owner: context.repo.owner,
               repo:  context.repo.repo,
               workflow_id: "transform.yml",
-              ref: "master",
+              ref: "main",
             })

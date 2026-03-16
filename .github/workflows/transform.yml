@@ -27,7 +27,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
-          ref: master
+          ref: main
 
       # Checkout data branch into data/ subdirectory.
       # If the branch doesn't exist yet (no backfill run), skip transform steps

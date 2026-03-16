@@ -22,11 +22,11 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:
-      # Scripts live on master
-      - name: Checkout master (scripts)
+      # Scripts live on main
+      - name: Checkout main (scripts)
         uses: actions/checkout@v4
         with:
-          ref: master
+          ref: main
           path: repo
 
       # Data lives on the data branch — create it if this is the first run
@@ -86,5 +86,5 @@ jobs:
               owner: context.repo.owner,
               repo: context.repo.repo,
               workflow_id: 'transform.yml',
-              ref: 'master',
+              ref: 'main',
             })
