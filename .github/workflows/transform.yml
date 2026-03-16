@@ -10,17 +10,28 @@ concurrency:
   group: transform
   cancel-in-progress: false
 
+# Required for the actions/deploy-pages step
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
 jobs:
   transform:
     runs-on: ubuntu-latest
     timeout-minutes: 30
+    environment:
+      name: github-pages
+      url: ${{ steps.deploy.outputs.page_url }}
+
     steps:
       - uses: actions/checkout@v4
         with:
           ref: master
 
       # Checkout data branch into data/ subdirectory.
-      # If the branch doesn't exist yet (no backfill run), skip remaining steps.
+      # If the branch doesn't exist yet (no backfill run), skip transform steps
+      # but still deploy the dashboard shell so the site is live.
       - name: Checkout data branch
         id: checkout-data
         run: |
@@ -72,12 +83,14 @@ jobs:
             --data-dir data/data \
             --output dashboard/
 
-      - name: Deploy to GitHub Pages
-        if: steps.check-parquet.outputs.parquet_count > 0
-        uses: peaceiris/actions-gh-pages@v4
+      # Always deploy the dashboard/ directory — even if there's no data yet,
+      # the shell (HTML + service worker) will be live and show "no data" overlays
+      # until the backfill runs.
+      - name: Upload Pages artifact
+        uses: actions/upload-pages-artifact@v3
         with:
-          github_token: ${{ secrets.GITHUB_TOKEN }}
-          publish_dir: ./dashboard
-          publish_branch: gh-pages
-          keep_files: true
-          commit_message: "deploy: $(date -u +%Y-%m-%dT%H:%M)Z"
+          path: ./dashboard
+
+      - name: Deploy to GitHub Pages
+        id: deploy
+        uses: actions/deploy-pages@v4

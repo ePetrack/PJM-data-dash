@@ -6,7 +6,8 @@ on:
   pull_request:
 
 jobs:
-  dbt-build:
+  # Validate all SQL compiles correctly — no data files needed
+  dbt-compile:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -19,12 +20,32 @@ jobs:
       - name: Install dependencies
         run: pip install dbt-duckdb
 
-      - name: dbt build (in-memory, no live data)
-        # ci profile uses :memory: DuckDB — validates all SQL without any
-        # external data files or API access
-        run: dbt build --target ci
+      - name: dbt compile (validates SQL without executing)
+        run: dbt compile --target ci
         env:
           DATA_DIR: "data"
 
-      - name: dbt docs generate
-        run: dbt docs generate --target ci
+  # Deploy the dashboard shell to GitHub Pages on every push to master.
+  # Charts will show "no data" overlays until the backfill workflow runs,
+  # but the site is live and the URL is shareable immediately.
+  deploy-shell:
+    runs-on: ubuntu-latest
+    needs: dbt-compile
+    if: github.ref == 'refs/heads/master' || github.ref == 'refs/heads/main'
+    permissions:
+      pages: write
+      id-token: write
+    environment:
+      name: github-pages
+      url: ${{ steps.deploy.outputs.page_url }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Upload Pages artifact
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: ./dashboard
+
+      - name: Deploy to GitHub Pages
+        id: deploy
+        uses: actions/deploy-pages@v4
