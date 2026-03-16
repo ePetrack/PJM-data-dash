@@ -23,6 +23,10 @@ on:
         type: boolean
         default: false
 
+permissions:
+  contents: write
+  actions: write
+
 jobs:
   backfill:
     runs-on: ubuntu-latest
@@ -36,11 +40,14 @@ jobs:
           path: repo
 
       - name: Initialise or checkout data branch
+        env:
+          GH_TOKEN: ${{ github.token }}
         run: |
-          git clone "${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}.git" data-branch \
+          REPO_URL="https://x-access-token:${GH_TOKEN}@github.com/${GITHUB_REPOSITORY}.git"
+          git clone "$REPO_URL" data-branch \
             --branch data --depth 1 2>/dev/null \
           || (
-            git clone "${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}.git" data-branch --depth 1
+            git clone "$REPO_URL" data-branch --depth 1
             cd data-branch
             git checkout --orphan data
             git rm -rf . --quiet || true
