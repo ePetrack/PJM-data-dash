@@ -19,36 +19,53 @@ jobs:
         with:
           ref: master
 
-      # Check out the data branch into a subdirectory so dbt can read it
+      # Checkout data branch into data/ subdirectory.
+      # If the branch doesn't exist yet (no backfill run), skip remaining steps.
       - name: Checkout data branch
-        uses: actions/checkout@v4
-        with:
-          ref: data
-          path: data
+        id: checkout-data
+        run: |
+          git clone "${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}.git" data \
+            --branch data --depth 1 2>/dev/null \
+          && echo "has_data=true" >> "$GITHUB_OUTPUT" \
+          || (echo "has_data=false" >> "$GITHUB_OUTPUT" && \
+              echo "::warning::data branch not found — run the backfill workflow first")
+
+      - name: Check for Parquet files
+        id: check-parquet
+        if: steps.checkout-data.outputs.has_data == 'true'
+        run: |
+          count=$(find data/data -name "*.parquet" 2>/dev/null | wc -l)
+          echo "parquet_count=$count" >> "$GITHUB_OUTPUT"
+          if [ "$count" -eq 0 ]; then
+            echo "::warning::No Parquet files in data branch — run the backfill workflow first"
+          fi
 
       - uses: actions/setup-python@v5
+        if: steps.check-parquet.outputs.parquet_count > 0
         with:
           python-version: "3.11"
           cache: pip
 
       - name: Install dependencies
+        if: steps.check-parquet.outputs.parquet_count > 0
         run: pip install dbt-duckdb pandas pyarrow duckdb
 
       - name: dbt run
+        if: steps.check-parquet.outputs.parquet_count > 0
         run: dbt run --target prod
         env:
           DATA_DIR: data/data
           DBT_PATH: /tmp/pjm_dash.duckdb
 
-      - name: dbt test (daily only — skip during intraday runs)
-        # Run tests on the scheduled daily job; skip on workflow_dispatch
-        if: github.event_name == 'schedule'
+      - name: dbt test (daily scheduled runs only)
+        if: steps.check-parquet.outputs.parquet_count > 0 && github.event_name == 'schedule'
         run: dbt test --target prod
         env:
           DATA_DIR: data/data
           DBT_PATH: /tmp/pjm_dash.duckdb
 
       - name: Export dashboard DuckDB files
+        if: steps.check-parquet.outputs.parquet_count > 0
         run: |
           python scripts/export_duckdb.py \
             --dbt-path /tmp/pjm_dash.duckdb \
@@ -56,6 +73,7 @@ jobs:
             --output dashboard/
 
       - name: Deploy to GitHub Pages
+        if: steps.check-parquet.outputs.parquet_count > 0
         uses: peaceiris/actions-gh-pages@v4
         with:
           github_token: ${{ secrets.GITHUB_TOKEN }}

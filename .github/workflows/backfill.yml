@@ -35,12 +35,23 @@ jobs:
           ref: master
           path: repo
 
-      - name: Checkout data branch
-        uses: actions/checkout@v4
-        with:
-          ref: data
-          path: data-branch
-          fetch-depth: 1
+      - name: Initialise or checkout data branch
+        run: |
+          git clone "${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}.git" data-branch \
+            --branch data --depth 1 2>/dev/null \
+          || (
+            git clone "${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}.git" data-branch --depth 1
+            cd data-branch
+            git checkout --orphan data
+            git rm -rf . --quiet || true
+            mkdir -p data
+            touch data/.gitkeep
+            git add data/.gitkeep
+            git -c user.name="github-actions[bot]" \
+                -c user.email="github-actions[bot]@users.noreply.github.com" \
+                commit -m "init: data branch"
+            git push origin data
+          )
 
       - uses: actions/setup-python@v5
         with:

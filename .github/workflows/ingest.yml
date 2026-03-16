@@ -22,10 +22,31 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:
-      - uses: actions/checkout@v4
+      # Scripts live on master
+      - name: Checkout master (scripts)
+        uses: actions/checkout@v4
         with:
-          ref: data          # raw data lives on the `data` branch
-          fetch-depth: 1
+          ref: master
+          path: repo
+
+      # Data lives on the data branch — create it if this is the first run
+      - name: Initialise or checkout data branch
+        run: |
+          git clone "${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}.git" data-branch \
+            --branch data --depth 1 2>/dev/null \
+          || (
+            git clone "${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}.git" data-branch --depth 1
+            cd data-branch
+            git checkout --orphan data
+            git rm -rf . --quiet || true
+            mkdir -p data
+            touch data/.gitkeep
+            git add data/.gitkeep
+            git -c user.name="github-actions[bot]" \
+                -c user.email="github-actions[bot]@users.noreply.github.com" \
+                commit -m "init: data branch"
+            git push origin data
+          )
 
       - uses: actions/setup-python@v5
         with:
@@ -40,19 +61,21 @@ jobs:
           DATE="${{ github.event.inputs.date || 'yesterday' }}"
           TO="${{ github.event.inputs.to_date }}"
           if [ -n "$TO" ]; then
-            python scripts/fetch_pjm.py --date "$DATE" --to "$TO" --output data/
+            python repo/scripts/fetch_pjm.py --date "$DATE" --to "$TO" --output data-branch/data/
           else
-            python scripts/fetch_pjm.py --date "$DATE" --output data/
+            python repo/scripts/fetch_pjm.py --date "$DATE" --output data-branch/data/
           fi
         env:
           PJM_API_KEY: ${{ secrets.PJM_API_KEY }}   # optional — falls back to anonymous key
 
-      - name: Commit Parquet files
+      - name: Commit Parquet files to data branch
+        working-directory: data-branch
         run: |
           git config user.name  "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
           git add data/
-          git diff --cached --quiet || git commit -m "ingest: $(date -u +%Y-%m-%dT%H:%M)Z"
+          git diff --cached --quiet && echo "Nothing new to commit" && exit 0
+          git commit -m "ingest: $(date -u +%Y-%m-%dT%H:%M)Z"
           git push origin data
 
       - name: Trigger transform workflow
