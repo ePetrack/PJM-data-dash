@@ -17,15 +17,17 @@ with source as (
 renamed as (
     select
         -- timestamps
-        -- Support both 'M/D/YYYY H:MM' (PJM API) and ISO formats (EIA may vary)
+        -- Support both 'M/D/YYYY H:MM' (PJM API) and ISO formats (EIA may vary).
+        -- try_strptime() returns NULL (not an error) on format mismatch, making
+        -- the CASE guard safe when rows from both sources are mixed.
         case
-            when strptime(datetime_beginning_ept, '%m/%d/%Y %H:%M') is not null
-            then strptime(datetime_beginning_ept, '%m/%d/%Y %H:%M')
+            when try_strptime(datetime_beginning_ept, '%m/%d/%Y %H:%M') is not null
+            then try_strptime(datetime_beginning_ept, '%m/%d/%Y %H:%M')
             else cast(datetime_beginning_ept as timestamp)
         end as hour_beginning_ept,
         case
-            when strptime(datetime_beginning_ept, '%m/%d/%Y %H:%M') is not null
-            then strptime(datetime_beginning_ept, '%m/%d/%Y %H:%M') at time zone 'America/New_York'
+            when try_strptime(datetime_beginning_ept, '%m/%d/%Y %H:%M') is not null
+            then try_strptime(datetime_beginning_ept, '%m/%d/%Y %H:%M') at time zone 'America/New_York'
             else cast(datetime_beginning_ept as timestamptz)
         end as hour_beginning_utc,
 
