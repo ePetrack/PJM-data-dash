@@ -4,10 +4,8 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>PJM Data Dashboard</title>
+<!-- ECharts -->
 <script src="https://cdn.jsdelivr.net/npm/echarts@5.5.1/dist/echarts.min.js"></script>
-<!-- DuckDB-WASM UMD bundle: loaded as a plain script (not an ES module) so
-     COEP credentialless cannot block it as a cross-origin module import. -->
-<script src="https://cdn.jsdelivr.net/npm/@duckdb/duckdb-wasm@1.29.0/dist/duckdb-mvp.js"></script>
 <style>
   :root {
     --bg:      #0d1117;
@@ -139,6 +137,12 @@
 </div>
 
 <script type="module">
+// Static top-level import — allowed by COEP credentialless because jsDelivr
+// sets Access-Control-Allow-Origin: * and module scripts use CORS (not CORP).
+// Dynamic import() of a cross-origin module fails under COEP credentialless;
+// a static import at module scope does not.
+import * as duckdb from "https://cdn.jsdelivr.net/npm/@duckdb/duckdb-wasm@1.29.0/dist/duckdb-browser.mjs";
+
 // ---------------------------------------------------------------------------
 // DuckDB-WASM setup
 // ---------------------------------------------------------------------------
@@ -160,10 +164,6 @@ let db, conn;
 
 async function initDB() {
   setStatus("loading", "Loading DuckDB…");
-  // Use the UMD global loaded by the <script> tag above.  A dynamic
-  // import() of a cross-origin ES module is blocked by COEP credentialless
-  // even when the CDN has CORS headers; a plain <script> tag is not.
-  const duckdb = window.duckdb;
   const bundle = await duckdb.selectBundle(JSDELIVR_BUNDLES);
   const workerUrl = URL.createObjectURL(
     new Blob([`importScripts("${bundle.mainWorker}");`], { type: "text/javascript" })
@@ -502,8 +502,11 @@ async function loadData() {
       const loadRows = await query(`
         select
           ${tsExpr} as ts,
-          cast(${diff > 186 ? "avg_load_mw" : "actual_load_mw"} as double)   as actual,
-          cast(${diff > 186 ? "avg_forecast_mw" : "forecast_load_mw"} as double) as forecast
+          cast(${diff > 186 ? "avg_load_mw"   : "actual_load_mw"}   as double) as actual,
+          cast(${diff > 186 ? "avg_forecast_mw" : "forecast_load_mw"} as double) as forecast,
+          -- For daily grain use the per-day peak (true intra-day max);
+          -- for hourly grain actual_load_mw is already a single-hour value.
+          cast(${diff > 186 ? "peak_load_mw"  : "actual_load_mw"}   as double) as peak
         from ${loadTable}
         where zone = 'DUQ'
           and ${dateFilter}
@@ -512,7 +515,7 @@ async function loadData() {
       `);
       renderLoadChart(loadRows);
       setOverlay("load", loadRows.length === 0 ? "no-data" : null);
-      const peakLoad = loadRows.length > 0 ? Math.max(...loadRows.map(r => r.actual || 0)) : null;
+      const peakLoad = loadRows.length > 0 ? Math.max(...loadRows.map(r => r.peak || 0)) : null;
       kpi("kpi-load", peakLoad, 0);
 
       const errRows = loadRows.filter(r => r.actual !== null && r.forecast !== null);
