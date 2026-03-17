@@ -455,15 +455,22 @@ async function loadData() {
   }
 
   try {
+    // Wrap in an outer GROUP BY so that if pnodeWhere matches more than one
+    // pnode per timestamp (e.g. multiple DUQ zone nodes) we get a single
+    // average price per timestamp rather than a row explosion.
     const lmpRows = await query(`
-      select
-        ${tsExpr} as ts,
-        cast(${daCol} as double)     as da,
-        cast(${rtCol} as double)     as rt,
-        cast(${spreadCol} as double) as spread
-      from ${lmpTable}
-      where ${dateFilter}
-        and ${pnodeWhere}
+      select ts, avg(da) as da, avg(rt) as rt, avg(spread) as spread
+      from (
+        select
+          ${tsExpr} as ts,
+          cast(${daCol} as double)     as da,
+          cast(${rtCol} as double)     as rt,
+          cast(${spreadCol} as double) as spread
+        from ${lmpTable}
+        where ${dateFilter}
+          and ${pnodeWhere}
+      )
+      group by ts
       order by ts
       limit 5000
     `);
@@ -505,7 +512,7 @@ async function loadData() {
       `);
       renderLoadChart(loadRows);
       setOverlay("load", loadRows.length === 0 ? "no-data" : null);
-      const peakLoad = Math.max(...loadRows.map(r => r.actual || 0));
+      const peakLoad = loadRows.length > 0 ? Math.max(...loadRows.map(r => r.actual || 0)) : null;
       kpi("kpi-load", peakLoad, 0);
 
       const errRows = loadRows.filter(r => r.actual !== null && r.forecast !== null);
