@@ -5,6 +5,9 @@
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>PJM Data Dashboard</title>
 <script src="https://cdn.jsdelivr.net/npm/echarts@5.5.1/dist/echarts.min.js"></script>
+<!-- DuckDB-WASM UMD bundle: loaded as a plain script (not an ES module) so
+     COEP credentialless cannot block it as a cross-origin module import. -->
+<script src="https://cdn.jsdelivr.net/npm/@duckdb/duckdb-wasm@1.29.0/dist/duckdb-mvp.js"></script>
 <style>
   :root {
     --bg:      #0d1117;
@@ -157,7 +160,10 @@ let db, conn;
 
 async function initDB() {
   setStatus("loading", "Loading DuckDB…");
-  const duckdb = await import("https://cdn.jsdelivr.net/npm/@duckdb/duckdb-wasm@1.29.0/dist/duckdb-esm.js");
+  // Use the UMD global loaded by the <script> tag above.  A dynamic
+  // import() of a cross-origin ES module is blocked by COEP credentialless
+  // even when the CDN has CORS headers; a plain <script> tag is not.
+  const duckdb = window.duckdb;
   const bundle = await duckdb.selectBundle(JSDELIVR_BUNDLES);
   const workerUrl = URL.createObjectURL(
     new Blob([`importScripts("${bundle.mainWorker}");`], { type: "text/javascript" })
@@ -449,15 +455,22 @@ async function loadData() {
   }
 
   try {
+    // Wrap in an outer GROUP BY so that if pnodeWhere matches more than one
+    // pnode per timestamp (e.g. multiple DUQ zone nodes) we get a single
+    // average price per timestamp rather than a row explosion.
     const lmpRows = await query(`
-      select
-        ${tsExpr} as ts,
-        cast(${daCol} as double)     as da,
-        cast(${rtCol} as double)     as rt,
-        cast(${spreadCol} as double) as spread
-      from ${lmpTable}
-      where ${dateFilter}
-        and ${pnodeWhere}
+      select ts, avg(da) as da, avg(rt) as rt, avg(spread) as spread
+      from (
+        select
+          ${tsExpr} as ts,
+          cast(${daCol} as double)     as da,
+          cast(${rtCol} as double)     as rt,
+          cast(${spreadCol} as double) as spread
+        from ${lmpTable}
+        where ${dateFilter}
+          and ${pnodeWhere}
+      )
+      group by ts
       order by ts
       limit 5000
     `);
@@ -499,7 +512,7 @@ async function loadData() {
       `);
       renderLoadChart(loadRows);
       setOverlay("load", loadRows.length === 0 ? "no-data" : null);
-      const peakLoad = Math.max(...loadRows.map(r => r.actual || 0));
+      const peakLoad = loadRows.length > 0 ? Math.max(...loadRows.map(r => r.actual || 0)) : null;
       kpi("kpi-load", peakLoad, 0);
 
       const errRows = loadRows.filter(r => r.actual !== null && r.forecast !== null);
