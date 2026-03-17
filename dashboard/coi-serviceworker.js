@@ -32,30 +32,39 @@ self.addEventListener("install", () => self.skipWaiting());
 self.addEventListener("activate", (e) => e.waitUntil(self.clients.claim()));
 
 self.addEventListener("fetch", (event) => {
-  // Only intercept same-origin requests (leave CDN calls unmodified)
-  if (event.request.url.startsWith(self.location.origin)) {
-    event.respondWith(
-      fetch(event.request).then((response) => {
-        // If the response already has the required headers, pass it through.
-        if (
-          response.headers.get("Cross-Origin-Embedder-Policy") &&
-          response.headers.get("Cross-Origin-Opener-Policy")
-        ) {
-          return response;
-        }
+  event.respondWith(
+    fetch(event.request).then((response) => {
+      // Opaque (no-cors) responses can't have headers modified; they are
+      // already allowed under COEP credentialless so return them as-is.
+      if (response.type === "opaque") return response;
 
-        // Clone the headers and add the cross-origin isolation headers.
-        const headers = new Headers(response.headers);
+      // Already has the isolation headers we need — pass through.
+      if (
+        response.headers.get("Cross-Origin-Embedder-Policy") &&
+        response.headers.get("Cross-Origin-Opener-Policy")
+      ) {
+        return response;
+      }
+
+      const isSameOrigin = event.request.url.startsWith(self.location.origin);
+      const headers = new Headers(response.headers);
+
+      if (isSameOrigin) {
+        // Inject COEP + COOP on same-origin responses (the page itself).
         headers.set("Cross-Origin-Embedder-Policy", "credentialless");
         headers.set("Cross-Origin-Opener-Policy",   "same-origin");
-        headers.set("Cross-Origin-Resource-Policy", "cross-origin");
+      }
 
-        return new Response(response.body, {
-          status:     response.status,
-          statusText: response.statusText,
-          headers,
-        });
-      })
-    );
-  }
+      // Add CORP to every response (same-origin and CDN alike) so that
+      // cross-origin dynamic import() calls — including internal webpack
+      // chunks inside duckdb-mvp.js — are embeddable under COEP.
+      headers.set("Cross-Origin-Resource-Policy", "cross-origin");
+
+      return new Response(response.body, {
+        status:     response.status,
+        statusText: response.statusText,
+        headers,
+      });
+    })
+  );
 });
