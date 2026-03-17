@@ -5,7 +5,6 @@
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>PJM Data Dashboard</title>
 <script src="https://cdn.jsdelivr.net/npm/echarts@5.5.1/dist/echarts.min.js"></script>
-<script src="https://cdn.jsdelivr.net/npm/@duckdb/duckdb-wasm@1.29.0/dist/duckdb-mvp.js"></script>
 <style>
   :root {
     --bg:      #0d1117;
@@ -31,8 +30,9 @@
   .control-group label { font-size: 11px; color: var(--muted); text-transform: uppercase; letter-spacing: 0.5px; }
   select, input[type=date] { background: var(--bg); border: 1px solid var(--border); color: var(--text); padding: 6px 10px; border-radius: 6px; font-size: 13px; cursor: pointer; }
   select:focus, input:focus { outline: 1px solid var(--accent); border-color: var(--accent); }
-  button { background: var(--accent); color: #0d1117; border: none; padding: 7px 16px; border-radius: 6px; font-size: 13px; font-weight: 600; cursor: pointer; align-self: flex-end; }
-  button:hover { opacity: 0.85; }
+  #apply-btn { background: var(--accent); color: #0d1117; border: none; padding: 7px 16px; border-radius: 6px; font-size: 13px; font-weight: 600; cursor: pointer; align-self: flex-end; }
+  #apply-btn:hover { opacity: 0.85; }
+  #apply-btn:disabled { opacity: 0.4; cursor: not-allowed; }
 
   .kpis { display: grid; grid-template-columns: repeat(auto-fill, minmax(160px, 1fr)); gap: 12px; padding: 16px 24px; }
   .kpi { background: var(--surface); border: 1px solid var(--border); border-radius: 8px; padding: 12px 16px; }
@@ -101,7 +101,7 @@
       <option value="HUB_51217">Western Hub</option>
     </select>
   </div>
-  <button id="apply-btn">Apply</button>
+  <button id="apply-btn" disabled>Apply</button>
 </div>
 
 <div class="kpis">
@@ -242,16 +242,6 @@ let loadedFiles = new Set();
 
 async function ensureDataLoaded(from, to) {
   const diff = daysDiff(from, to);
-
-  // Always need dim
-  if (!loadedFiles.has("dim")) {
-    try {
-      await attachFile("pjm_dim.duckdb", "dim");
-      loadedFiles.add("dim");
-    } catch (e) {
-      console.warn("pjm_dim.duckdb not found:", e.message);
-    }
-  }
 
   if (diff <= 7) {
     // 5-min / intraday
@@ -403,21 +393,40 @@ async function loadData() {
   const pnode  = document.getElementById("pnode-filter").value;
   const diff   = daysDiff(from, to);
 
+  // Bug 3 fix: build WHERE fragment for the selected pnode
+  const pnodeWhere = pnode === "HUB_51217"
+    ? "pnode_id = 51217"
+    : "zone = 'DUQ' AND pnode_id != 51217";
+
   setStatus("loading", "Loading data…");
   ["lmp", "spread", "load", "pdc"].forEach(id => setOverlay(id, "loading"));
 
   await ensureDataLoaded(from, to);
 
   // Choose table + grain label
-  let lmpTable, loadTable, tsExpr;
+  let lmpTable, loadTable, tsExpr, dateFilter;
   if (diff <= 7 && loadedFiles.has("today")) {
-    lmpTable  = "today.rt_recent";
-    loadTable = null;
-    tsExpr    = "datetime_beginning_ept";
+    // Bug 5 fix: join da_recent onto rt_recent so both DA and RT columns exist
+    lmpTable  = `(
+      select r.datetime_beginning_ept,
+             r.pnode_id, r.zone,
+             d.total_lmp_da,
+             r.total_lmp_rt,
+             d.total_lmp_da - r.total_lmp_rt as da_rt_spread
+      from today.rt_recent r
+      left join today.da_recent d
+        on r.datetime_beginning_ept = d.datetime_beginning_ept
+       and r.pnode_id = d.pnode_id
+    )`;
+    loadTable   = null;
+    tsExpr      = "datetime_beginning_ept";
+    dateFilter  = `datetime_beginning_ept >= '${from}' and datetime_beginning_ept <= '${to} 23:59'`;
   } else if (diff > 186 && loadedFiles.has("daily")) {
-    lmpTable  = "daily.lmps_daily";
-    loadTable = "daily.load_daily";
-    tsExpr    = "date_utc::text";
+    lmpTable    = "daily.lmps_daily";
+    loadTable   = "daily.load_daily";
+    tsExpr      = "date_utc::text";
+    // Bug 6 fix: compare DATE column directly, not as text
+    dateFilter  = `date_utc >= '${from}' and date_utc <= '${to}'`;
   } else {
     // Build a union of loaded half-year tables
     const halves = uniqueHalves(from, to).filter(h => loadedFiles.has(h));
@@ -426,9 +435,11 @@ async function loadData() {
       return;
     }
     const unions = halves.map(h => `select * from h${h.replace("H","_")}.lmps`).join(" union all ");
-    lmpTable  = `(${unions})`;
-    loadTable = null;  // mart_load not exported to half-year files yet
-    tsExpr    = "hour_beginning_utc::text";
+    lmpTable    = `(${unions})`;
+    loadTable   = null;
+    tsExpr      = "hour_beginning_utc::text";
+    // Bug 6 fix: cast TIMESTAMP to DATE before comparing against EPT date strings
+    dateFilter  = `CAST(hour_beginning_utc AS DATE) >= '${from}' and CAST(hour_beginning_utc AS DATE) <= '${to}'`;
   }
 
   // LMP query
@@ -445,7 +456,8 @@ async function loadData() {
         cast(${rtCol} as double)     as rt,
         cast(${spreadCol} as double) as spread
       from ${lmpTable}
-      where ${tsExpr} >= '${from}' and ${tsExpr} <= '${to} 23:59'
+      where ${dateFilter}
+        and ${pnodeWhere}
       order by ts
       limit 5000
     `);
@@ -481,7 +493,7 @@ async function loadData() {
           cast(${diff > 186 ? "avg_forecast_mw" : "forecast_load_mw"} as double) as forecast
         from ${loadTable}
         where zone = 'DUQ'
-          and ${tsExpr} >= '${from}' and ${tsExpr} <= '${to} 23:59'
+          and ${dateFilter}
         order by ts
         limit 5000
       `);
@@ -548,9 +560,21 @@ async function registerServiceWorker() {
   if (!("serviceWorker" in navigator)) return;
   try {
     await navigator.serviceWorker.register("./coi-serviceworker.js");
-    // Reload once so the SW-injected COOP/COEP headers take effect.
-    // DuckDB-WASM needs crossOriginIsolated to use SharedArrayBuffer.
-    if (!crossOriginIsolated) location.reload();
+    if (!crossOriginIsolated) {
+      // Guard: only reload once per session to prevent an infinite loop if
+      // headers somehow fail to apply.
+      if (sessionStorage.getItem("coi-reloaded")) return;
+      sessionStorage.setItem("coi-reloaded", "1");
+      // Wait until the SW is actually controlling this client; otherwise the
+      // reload may happen before the SW intercepts it and the page never
+      // receives the COOP/COEP headers that crossOriginIsolated requires.
+      if (!navigator.serviceWorker.controller) {
+        await new Promise(resolve =>
+          navigator.serviceWorker.addEventListener("controllerchange", resolve, { once: true })
+        );
+      }
+      location.reload();
+    }
   } catch (e) {
     console.warn("Service worker registration failed:", e);
   }
@@ -567,6 +591,7 @@ async function boot() {
 
   try {
     await initDB();
+    document.getElementById("apply-btn").disabled = false;
     await loadData();
   } catch (e) {
     setStatus("error", e.message);
