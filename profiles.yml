@@ -2,17 +2,17 @@ pjm_dash:
   target: ci
   outputs:
     # CI: pure in-memory DuckDB, no external files needed.
-    # No extensions listed — parquet/httpfs/json are built into DuckDB 1.5+
-    # and auto-load on first use. Listing them causes dbt-duckdb to call
-    # INSTALL which tries to download from extensions.duckdb.org and fails
-    # in network-restricted environments.
+    # config_options are passed as config= to duckdb.connect() at connection
+    # time, before DuckDB can attempt to auto-install built-in extensions.
+    # (settings: are applied post-connection via SET commands — too late to
+    # prevent the "parquet" download attempt in network-restricted envs.)
     ci:
       type: duckdb
       path: ':memory:'
       threads: 1
-      settings:
-        autoinstall_known_extensions: 0
-        autoload_known_extensions: 1
+      config_options:
+        autoinstall_known_extensions: false
+        autoload_known_extensions: false
 
     # prod: writes to a persistent DuckDB file so export_duckdb.py can attach
     # and read the mart tables after dbt exits.
@@ -21,7 +21,6 @@ pjm_dash:
       type: duckdb
       path: "{{ env_var('DBT_PATH', '/tmp/pjm_dash.duckdb') }}"
       threads: 4
-      settings:
-        data_dir: "{{ env_var('DATA_DIR', 'data') }}"
-        autoinstall_known_extensions: 0
-        autoload_known_extensions: 1
+      config_options:
+        autoinstall_known_extensions: false
+        autoload_known_extensions: false

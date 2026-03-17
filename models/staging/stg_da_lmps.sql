@@ -11,7 +11,10 @@
 -- The `source` column is present in EIA rows and absent in PJM rows.
 
 with source as (
-    select * from read_parquet('{{ env_var("DATA_DIR", "data") }}/da_lmps/*.parquet')
+    -- union_by_name=true unifies schemas across PJM API files (have `type`) and
+    -- EIA backfill files (have `pnode_type`, `source`), null-filling missing cols.
+    select * from read_parquet('{{ env_var("DATA_DIR", "data") }}/da_lmps/*.parquet',
+                               union_by_name = true)
 ),
 
 renamed as (
@@ -34,8 +37,10 @@ renamed as (
         -- location
         try_cast(pnode_id as integer) as pnode_id,
         trim(pnode_name)              as pnode_name,
-        -- `type` is the PJM API field name; `pnode_type` is what backfill_eia writes
-        coalesce(trim(type), trim(pnode_type)) as pnode_type,
+        -- `type` is the PJM API field name. backfill_eia.py also always writes a
+        -- `type` column (see backfill_eia.py lines 110-111, 121-122), so `type`
+        -- is guaranteed across both PJM and EIA Parquet files.
+        trim(type) as pnode_type,
         trim(zone)                    as zone,
 
         -- price components ($/MWh) — EIA may omit component columns
