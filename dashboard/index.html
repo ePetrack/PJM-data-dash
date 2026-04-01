@@ -599,7 +599,7 @@ async function registerServiceWorker() {
 async function boot() {
   await registerServiceWorker();
 
-  // Set default date range: last 7 days
+  // Set initial default: last 7 days (may be overridden below if data is stale)
   document.getElementById("date-to").value   = daysBack(0);
   document.getElementById("date-from").value = daysBack(7);
 
@@ -608,6 +608,26 @@ async function boot() {
   try {
     await initDB();
     document.getElementById("apply-btn").disabled = false;
+
+    // Probe the daily aggregate to find the latest available data date.
+    // If the dataset doesn't cover the last 7 days (e.g. sample / offline data),
+    // default to the last 30 days of actual data so charts render on first load.
+    try {
+      await attachFile("pjm_daily_agg.duckdb", "daily");
+      loadedFiles.add("daily");
+      const [row] = await query("select max(date_utc)::text as d from daily.lmps_daily");
+      const latest = row?.d?.slice(0, 10);
+      if (latest && latest < daysBack(7)) {
+        const latestD = new Date(latest + "T00:00:00");
+        const fromD   = new Date(latestD);
+        fromD.setDate(latestD.getDate() - 30);
+        document.getElementById("date-to").value   = latest;
+        document.getElementById("date-from").value = fromD.toISOString().slice(0, 10);
+      }
+    } catch (e) {
+      console.warn("Could not probe for latest data date:", e);
+    }
+
     await loadData();
   } catch (e) {
     setStatus("error", e.message);
