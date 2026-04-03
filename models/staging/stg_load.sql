@@ -10,9 +10,17 @@ with source as (
 
 renamed as (
     select
-        -- timestamps
-        strptime(datetime_beginning_ept, '%m/%d/%Y %H:%M') as hour_beginning_ept,
-        strptime(datetime_beginning_ept, '%m/%d/%Y %H:%M') at time zone 'America/New_York' as hour_beginning_utc,
+        -- timestamps — try PJM API format first, fall back to ISO / other formats
+        case
+            when try_strptime(datetime_beginning_ept, '%m/%d/%Y %H:%M') is not null
+            then try_strptime(datetime_beginning_ept, '%m/%d/%Y %H:%M')
+            else cast(datetime_beginning_ept as timestamp)
+        end as hour_beginning_ept,
+        case
+            when try_strptime(datetime_beginning_ept, '%m/%d/%Y %H:%M') is not null
+            then try_strptime(datetime_beginning_ept, '%m/%d/%Y %H:%M') at time zone 'America/New_York'
+            else cast(datetime_beginning_ept as timestamptz)
+        end as hour_beginning_utc,
 
         -- location
         trim(zone)        as zone,
@@ -21,10 +29,11 @@ renamed as (
         trim(mkt_region)  as mkt_region,
 
         -- load
-        cast(mw as double)            as load_mw,
-        cast(is_verified as boolean)  as is_verified
+        try_cast(mw as double)            as load_mw,
+        try_cast(is_verified as boolean)  as is_verified
 
     from source
 )
 
 select * from renamed
+where load_mw is not null

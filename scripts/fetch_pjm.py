@@ -30,9 +30,10 @@ import requests
 # ---------------------------------------------------------------------------
 
 BASE_URL = "https://api.pjm.com/api/v1"
-SETTINGS_URL = "http://dataminer2.pjm.com/config/settings.json"
+SETTINGS_URL = "https://dataminer2.pjm.com/config/settings.json"
 MAX_ROWS = 50_000
 RATE_LIMIT_SLEEP = 10  # seconds between requests for anonymous key
+RETRIES = 3  # transient-error retries with exponential backoff
 
 # Feeds to ingest and their subdirectory names
 FEEDS = {
@@ -63,13 +64,28 @@ FEEDS = {
 # API client
 # ---------------------------------------------------------------------------
 
+def _request_with_retry(method, *args, retries: int = RETRIES, **kwargs):
+    """Call *method*(*args, **kwargs) with exponential-backoff retry on transient errors."""
+    for attempt in range(retries):
+        try:
+            resp = method(*args, **kwargs)
+            resp.raise_for_status()
+            return resp
+        except requests.RequestException as e:
+            if attempt < retries - 1:
+                wait = 2 ** attempt
+                print(f"    retrying in {wait}s ({e})")
+                time.sleep(wait)
+            else:
+                raise
+
+
 def get_subscription_key() -> str:
     """Return the subscription key — registered key takes priority."""
     env_key = os.environ.get("PJM_API_KEY")
     if env_key:
         return env_key
-    resp = requests.get(SETTINGS_URL, timeout=15)
-    resp.raise_for_status()
+    resp = _request_with_retry(requests.get, SETTINGS_URL, timeout=15)
     return resp.json()["subscriptionKey"]
 
 
@@ -93,8 +109,9 @@ def fetch_feed(
             "datetime_beginning_ept": date_param,
             **extra_params,
         }
-        resp = session.get(f"{BASE_URL}/{feed_name}", params=params, timeout=30)
-        resp.raise_for_status()
+        resp = _request_with_retry(
+            session.get, f"{BASE_URL}/{feed_name}", params=params, timeout=30
+        )
 
         data = resp.json()
 
