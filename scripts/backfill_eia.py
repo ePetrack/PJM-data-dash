@@ -193,7 +193,7 @@ def fetch_csv(url: str, retries: int = 3) -> pd.DataFrame | None:
                 return None  # file doesn't exist yet (future year/quarter)
             resp.raise_for_status()
             return pd.read_csv(io.BytesIO(resp.content), low_memory=False)
-        except (requests.RequestException, Exception) as e:
+        except requests.RequestException as e:
             if attempt < retries - 1:
                 wait = 2 ** attempt
                 print(f"    retrying in {wait}s ({e})")

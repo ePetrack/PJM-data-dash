@@ -11,21 +11,30 @@ with source as (
 
 renamed as (
     select
-        -- when the forecast was published
-        strptime(evaluated_at_datetime_ept, '%m/%d/%Y %H:%M')
-            as evaluated_at_ept,
+        -- when the forecast was published — try PJM API format first
+        case
+            when try_strptime(evaluated_at_datetime_ept, '%m/%d/%Y %H:%M') is not null
+            then try_strptime(evaluated_at_datetime_ept, '%m/%d/%Y %H:%M')
+            else cast(evaluated_at_datetime_ept as timestamp)
+        end as evaluated_at_ept,
 
         -- what hour the forecast is for
-        strptime(forecast_datetime_beginning_ept, '%m/%d/%Y %H:%M')
-            as forecast_hour_ept,
-        strptime(forecast_datetime_beginning_ept, '%m/%d/%Y %H:%M') at time zone 'America/New_York'
-            as forecast_hour_utc,
+        case
+            when try_strptime(forecast_datetime_beginning_ept, '%m/%d/%Y %H:%M') is not null
+            then try_strptime(forecast_datetime_beginning_ept, '%m/%d/%Y %H:%M')
+            else cast(forecast_datetime_beginning_ept as timestamp)
+        end as forecast_hour_ept,
+        case
+            when try_strptime(forecast_datetime_beginning_ept, '%m/%d/%Y %H:%M') is not null
+            then try_strptime(forecast_datetime_beginning_ept, '%m/%d/%Y %H:%M') at time zone 'America/New_York'
+            else cast(forecast_datetime_beginning_ept as timestamptz)
+        end as forecast_hour_utc,
 
         -- area (e.g. DUQ, AEP, RTO_COMBINED)
         trim(forecast_area) as forecast_area,
 
         -- forecasted load
-        cast(forecast_load_mw as double) as forecast_load_mw
+        try_cast(forecast_load_mw as double) as forecast_load_mw
 
     from source
 ),

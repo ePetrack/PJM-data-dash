@@ -100,7 +100,7 @@ def export_today(data_dir: Path, output_dir: Path) -> None:
                 try_cast(congestion_price_rt as real) as congestion_rt,
                 try_cast(marginal_loss_price_rt as real) as loss_rt
             from read_parquet('{parquet_glob}')
-            where strptime(datetime_beginning_ept, '%m/%d/%Y %H:%M')
+            where try_strptime(datetime_beginning_ept, '%m/%d/%Y %H:%M')
                   >= current_timestamp - interval '7 days'
         """)
     except Exception as e:
@@ -117,7 +117,7 @@ def export_today(data_dir: Path, output_dir: Path) -> None:
                 coalesce(trim(zone), trim(pnode_name))  as zone,
                 cast(total_lmp_da as real)              as total_lmp_da
             from read_parquet('{da_glob}')
-            where strptime(datetime_beginning_ept, '%m/%d/%Y %H:%M')
+            where try_strptime(datetime_beginning_ept, '%m/%d/%Y %H:%M')
                   >= current_timestamp - interval '7 days'
         """)
     except Exception as e:

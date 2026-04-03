@@ -11,23 +11,32 @@ with source as (
 
 renamed as (
     select
-        -- timestamps
-        strptime(datetime_beginning_ept, '%m/%d/%Y %H:%M') as hour_beginning_ept,
-        strptime(datetime_beginning_ept, '%m/%d/%Y %H:%M') at time zone 'America/New_York' as hour_beginning_utc,
+        -- timestamps — try PJM API format first, fall back to ISO / other formats
+        case
+            when try_strptime(datetime_beginning_ept, '%m/%d/%Y %H:%M') is not null
+            then try_strptime(datetime_beginning_ept, '%m/%d/%Y %H:%M')
+            else cast(datetime_beginning_ept as timestamp)
+        end as hour_beginning_ept,
+        case
+            when try_strptime(datetime_beginning_ept, '%m/%d/%Y %H:%M') is not null
+            then try_strptime(datetime_beginning_ept, '%m/%d/%Y %H:%M') at time zone 'America/New_York'
+            else cast(datetime_beginning_ept as timestamptz)
+        end as hour_beginning_utc,
 
         -- location
-        cast(pnode_id as integer)  as pnode_id,
-        trim(pnode_name)           as pnode_name,
-        trim(type)                 as pnode_type,
-        trim(zone)                 as zone,
+        try_cast(pnode_id as integer)  as pnode_id,
+        trim(pnode_name)               as pnode_name,
+        trim(type)                     as pnode_type,
+        trim(zone)                     as zone,
 
         -- price components ($/MWh)
-        cast(system_energy_price_rt as double) as energy_price_rt,
-        cast(congestion_price_rt    as double) as congestion_price_rt,
-        cast(marginal_loss_price_rt as double) as loss_price_rt,
-        cast(total_lmp_rt           as double) as total_lmp_rt
+        try_cast(system_energy_price_rt as double) as energy_price_rt,
+        try_cast(congestion_price_rt    as double) as congestion_price_rt,
+        try_cast(marginal_loss_price_rt as double) as loss_price_rt,
+        try_cast(total_lmp_rt           as double) as total_lmp_rt
 
     from source
 )
 
 select * from renamed
+where total_lmp_rt is not null
