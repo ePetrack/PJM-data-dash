@@ -16,8 +16,8 @@ on:
         description: "Space-separated years to backfill (e.g. '2022 2023 2024'). Defaults to all available years."
         default: ""
       types:
-        description: "File types: zones, hubs, rt_zones (space-separated)"
-        default: "zones hubs"
+        description: "File types: zones, hubs, load, rt_zones (space-separated)"
+        default: "zones hubs load"
       include_rt:
         description: "Also download RT 5-min zone files (large, quarterly)"
         type: boolean

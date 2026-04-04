@@ -11,10 +11,10 @@ get started.
 ## Architecture overview
 
 ```
-PJM Data Miner 2 API (DA/RT LMPs, load, forecasts)
+EIA bulk CSV downloads (DA/RT LMPs, hourly load — no auth required)
   │
-  ├─ GitHub Actions every 30 min (ingest.yml)
-  │    └─ scripts/fetch_pjm.py  → Parquet files committed to `data` branch
+  ├─ GitHub Actions daily (ingest.yml)
+  │    └─ scripts/backfill_eia.py --refresh  → Parquet files committed to `data` branch
   │
   ├─ GitHub Actions daily + after ingest (transform.yml)
   │    ├─ dbt run --target prod  → reads Parquet, builds mart tables (DuckDB in-memory)
@@ -31,7 +31,7 @@ PJM Data Miner 2 API (DA/RT LMPs, load, forecasts)
 
 | analytics-as-code (AEMO) | PJM-data-dash |
 |---|---|
-| AEMO SCADA + price feeds | PJM Data Miner 2 API feeds |
+| AEMO SCADA + price feeds | EIA bulk CSVs (+ optional PJM API) |
 | Apache Iceberg REST catalog | Parquet files on `data` branch |
 | dbt-duckdb incremental models | dbt-duckdb incremental models |
 | GitHub Actions scheduler | GitHub Actions scheduler |
@@ -45,70 +45,47 @@ if write throughput demands it.
 
 ## Data sources
 
-### PJM Data Miner 2 — settings.json trick
+### EIA bulk CSV (primary — zero auth)
 
-PJM's web UI embeds a public subscription key in a config file. No account
-registration needed:
+The pipeline uses EIA's pre-built annual CSV files. No API key, no account,
+no pagination — just direct HTTP downloads:
 
-```python
-import requests
-
-settings = requests.get("http://dataminer2.pjm.com/config/settings.json").json()
-headers = {"Ocp-Apim-Subscription-Key": settings["subscriptionKey"]}
-
-r = requests.get(
-    "https://api.pjm.com/api/v1/da_hrl_lmps",
-    headers=headers,
-    params={
-        "startRow": 1,
-        "rowCount": 50000,
-        "datetime_beginning_ept": "Yesterday",
-        "zone": "DUQ",
-        "type": "ZONE",
-    },
-)
+```
+https://www.eia.gov/electricity/wholesalemarkets/csv/pjm_lmp_da_hr_zones_{YYYY}.csv
+https://www.eia.gov/electricity/wholesalemarkets/csv/pjm_lmp_da_hr_hubs_{YYYY}.csv
+https://www.eia.gov/electricity/wholesalemarkets/csv/pjm_lmp_rt_5min_zones_{YYYY}Q{Q}.csv
+https://www.eia.gov/electricity/wholesalemarkets/csv/pjm_load_act_hr_{YYYY}.csv
 ```
 
-**Rate limits**: anonymous key = 6 req/min. Register free at
-`apiportal.pjm.com` for 600 req/min.
-
-### Key feeds
-
-| Feed | Grain | Retention | Notes |
+| File | Grain | Coverage | Notes |
 |---|---|---|---|
-| `da_hrl_lmps` | Hourly | 731 days | Day-ahead LMPs by pnode/zone |
-| `rt_hrl_lmps` | Hourly | 731 days | Real-time LMPs |
-| `rt_fivemin_hrl_lmps` | 5-min | 186 days | Intraday RT |
-| `hrl_load_metered` | Hourly | 731 days | Metered zonal load |
-| `load_frcstd_7_day` | 30-min updates | Rolling 7 days | Load forecast |
-| `reg_market_results` | Hourly | 731 days | Regulation market |
+| `pjm_lmp_da_hr_zones` | Hourly | 2022–present | DA LMPs by zone |
+| `pjm_lmp_da_hr_hubs` | Hourly | 2022–present | DA LMPs by hub |
+| `pjm_lmp_rt_5min_zones` | 5-min | 2022–present | RT LMPs (quarterly files) |
+| `pjm_load_act_hr` | Hourly | 2022–present | Metered zonal load |
 
-### Date parameter formats
+EIA updates these files approximately weekly. `ingest.yml` re-downloads the
+current year's files daily to pick up new data.
 
-```
-datetime_beginning_ept=1/15/2025 00:00 to 1/16/2025 23:00   # range
-datetime_beginning_ept=Yesterday                              # keyword
-datetime_beginning_ept=CurrentMonth                          # keyword
-```
-
-Max range: 366 days. Max rows per request: 50,000.
+Browse the full catalog: `https://www.eia.gov/electricity/wholesalemarkets/data.php?rto=pjm`
 
 ### Scope
 
 - **Zone**: DUQ (Duquesne Light)
 - **Hub**: Western Hub (`pnode_id=51217`)
 
-### EIA bulk CSV (zero-auth fallback)
+### PJM Data Miner 2 API (optional — requires free API key)
 
-Full annual PJM zonal LMP files — no headers, no auth, no pagination:
+For load forecasts and higher-frequency data not available from EIA, you can
+optionally use the PJM API via `scripts/fetch_pjm.py`. Register for a free
+key at `https://apiportal.pjm.com`.
 
-```
-https://www.eia.gov/electricity/wholesalemarkets/csv/pjm_lmp_da_hr_zones_{YYYY}.csv
-https://www.eia.gov/electricity/wholesalemarkets/csv/pjm_lmp_da_hr_hubs_{YYYY}.csv
-https://www.eia.gov/electricity/wholesalemarkets/csv/pjm_lmp_rt_5min_zones_{YYYY}Q{Q}.csv
-```
-
-Browse the full catalog: `https://www.eia.gov/electricity/wholesalemarkets/data.php?rto=pjm`
+| Feed | Grain | Retention | Notes |
+|---|---|---|---|
+| `da_hrl_lmps` | Hourly | 731 days | Day-ahead LMPs by pnode/zone |
+| `rt_hrl_lmps` | Hourly | 731 days | Real-time LMPs |
+| `hrl_load_metered` | Hourly | 731 days | Metered zonal load |
+| `load_frcstd_7_day` | 30-min updates | Rolling 7 days | Load forecast (EIA does not have this) |
 
 ---
 
@@ -133,14 +110,16 @@ PJM-data-dash/
 ├── tests/
 │   └── schema.yml                   # uniqueness + not-null tests
 ├── scripts/
-│   ├── fetch_pjm.py                 # PJM API → Parquet
+│   ├── backfill_eia.py              # EIA CSV → Parquet (primary ingest)
+│   ├── fetch_pjm.py                 # PJM API → Parquet (optional, needs API key)
 │   └── export_duckdb.py             # dbt marts → dashboard .duckdb files
 ├── dashboard/
 │   └── index.html                   # DuckDB-WASM + ECharts dashboard
 └── .github/
     └── workflows/
         ├── ci.yml                   # dbt build on PR (in-memory, no live data)
-        ├── ingest.yml               # every 30 min: fetch PJM → Parquet
+        ├── ingest.yml               # daily: EIA CSV → Parquet
+        ├── backfill.yml             # one-time: bootstrap 2+ years of history
         └── transform.yml            # daily + after ingest: dbt + export + deploy
 ```
 
@@ -183,8 +162,8 @@ pip install dbt-duckdb pandas pyarrow requests
 # Run CI build (no live data needed — uses synthetic seed data)
 dbt build --target ci
 
-# Fetch live PJM data for yesterday
-python scripts/fetch_pjm.py --date yesterday --output data/
+# Download EIA data (DA LMPs + load for all available years)
+python scripts/backfill_eia.py --output data/
 
 # Run transforms against local Parquet files
 dbt run --target prod
@@ -202,12 +181,13 @@ open dashboard/index.html
 
 1. Fork this repo
 2. Enable GitHub Pages (Settings → Pages → source: `gh-pages` branch)
-3. Optionally add `PJM_API_KEY` secret (from `apiportal.pjm.com`) for higher
-   rate limits — the pipeline works without it using the anonymous key
+3. Run the **backfill.yml** workflow once to bootstrap 2+ years of history
+4. Optionally add `PJM_API_KEY` secret (from `apiportal.pjm.com`) if you
+   want load forecasts via `fetch_pjm.py` — not required for the default pipeline
 
-The three workflows run automatically:
+The workflows run automatically:
 - **ci.yml** — validates SQL on every PR
-- **ingest.yml** — fetches fresh PJM data every 30 minutes
+- **ingest.yml** — refreshes current-year EIA data daily (no API key needed)
 - **transform.yml** — runs dbt and deploys dashboard daily
 
 ---
@@ -234,8 +214,8 @@ first visit so the headers take effect. No server config changes are needed.
 | Phase | Status | Goal |
 |---|---|---|
 | 1 | ✅ done | Scaffold: dbt models, ingest script, CI workflow, dashboard shell |
-| 2 | 🔄 in progress | Historical backfill: EIA CSV → Parquet bootstrap for 2+ years of DA LMPs |
-| 3 | pending | Dashboard v1: wire live data, LMP time series + load vs forecast |
+| 2 | ✅ done | EIA-based ingest: DA LMPs + hourly load from EIA (zero auth) |
+| 3 | pending | Dashboard v1: wire live data, LMP time series + load chart |
 | 4 | pending | Dashboard v2: price duration curves, regulation prices, date range drill-down |
 | 5 | optional | Migrate Parquet storage to Apache Iceberg for scalability |
 
@@ -247,5 +227,5 @@ first visit so the headers take effect. No server config changes are needed.
 - [dbt-duckdb](https://github.com/duckdb/dbt-duckdb) — SQL transforms
 - [DuckDB-WASM](https://duckdb.org/docs/api/wasm/overview) — browser-side SQL
 - [Apache ECharts](https://echarts.apache.org/) — visualisation
-- [PJM Data Miner 2](https://dataminer2.pjm.com/) — market data source
-- [rzwink/pjm_dataminer](https://github.com/rzwink/pjm_dataminer) — settings.json technique
+- [EIA Wholesale Markets](https://www.eia.gov/electricity/wholesalemarkets/) — primary data source (zero auth)
+- [PJM Data Miner 2](https://dataminer2.pjm.com/) — optional API for load forecasts

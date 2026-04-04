@@ -1,18 +1,18 @@
 """
-fetch_pjm.py — PJM Data Miner 2 ingest script
+fetch_pjm.py — PJM Data Miner 2 ingest script (optional, requires API key)
 
 Fetches one or more PJM API feeds and writes the results as Parquet files
-under the data/ directory.  Uses the public subscription key embedded in
-the PJM web UI (settings.json trick) — no account registration required.
+under the data/ directory.  Requires a registered API key from PJM.
+
+NOTE: For zero-auth data ingest, use backfill_eia.py instead.  This script
+is only needed if you want load forecasts or higher-frequency data that
+EIA does not provide.
 
 Usage:
-    python scripts/fetch_pjm.py --date yesterday --output data/
-    python scripts/fetch_pjm.py --date 2025-01-15 --output data/
-    python scripts/fetch_pjm.py --date 2025-01-01 --to 2025-01-31 --output data/
+    PJM_API_KEY=your-key python scripts/fetch_pjm.py --date yesterday --output data/
 
 Environment:
-    PJM_API_KEY   optional — registered key from apiportal.pjm.com
-                  gives 600 req/min vs 6 req/min for the anonymous key
+    PJM_API_KEY   required — register free at https://apiportal.pjm.com
 """
 
 import argparse
@@ -30,9 +30,8 @@ import requests
 # ---------------------------------------------------------------------------
 
 BASE_URL = "https://api.pjm.com/api/v1"
-SETTINGS_URL = "https://dataminer2.pjm.com/config/settings.json"
 MAX_ROWS = 50_000
-RATE_LIMIT_SLEEP = 10  # seconds between requests for anonymous key
+RATE_LIMIT_SLEEP = 1  # seconds between requests (registered keys allow 600 req/min)
 RETRIES = 3  # transient-error retries with exponential backoff
 
 # Feeds to ingest and their subdirectory names
@@ -81,12 +80,18 @@ def _request_with_retry(method, *args, retries: int = RETRIES, **kwargs):
 
 
 def get_subscription_key() -> str:
-    """Return the subscription key — registered key takes priority."""
+    """Return the PJM API subscription key from the environment."""
     env_key = os.environ.get("PJM_API_KEY")
     if env_key:
         return env_key
-    resp = _request_with_retry(requests.get, SETTINGS_URL, timeout=15)
-    return resp.json()["subscriptionKey"]
+    print("ERROR: PJM_API_KEY environment variable is not set.")
+    print()
+    print("  Register for a free API key at: https://apiportal.pjm.com")
+    print("  Then: export PJM_API_KEY=your-key-here")
+    print()
+    print("  For zero-auth data ingest, use backfill_eia.py instead:")
+    print("    python scripts/backfill_eia.py --output data/")
+    sys.exit(1)
 
 
 def fetch_feed(

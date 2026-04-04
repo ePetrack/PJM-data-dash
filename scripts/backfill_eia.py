@@ -1,17 +1,18 @@
 """
 backfill_eia.py — Download EIA wholesale market CSVs and write to Parquet
 
-EIA hosts pre-built annual CSV files of PJM LMP data at no-auth URLs:
+EIA hosts pre-built annual CSV files of PJM market data at no-auth URLs:
 
   DA hourly LMPs by zone:  pjm_lmp_da_hr_zones_{YYYY}.csv
   DA hourly LMPs by hub:   pjm_lmp_da_hr_hubs_{YYYY}.csv
   RT 5-min LMPs by zone:   pjm_lmp_rt_5min_zones_{YYYY}Q{Q}.csv
+  Hourly metered load:      pjm_load_act_hr_{YYYY}.csv
 
 These are normalised to the same Parquet schema that fetch_pjm.py produces
 so dbt staging models can read both sources from the same glob pattern.
 
 Usage:
-    # Backfill all available years (2022–yesterday's year) — da_lmps only
+    # Backfill all available years (2022–current) — DA LMPs + load
     python scripts/backfill_eia.py --output data/
 
     # Specific years
@@ -22,6 +23,9 @@ Usage:
 
     # Hubs only (Western Hub etc.)
     python scripts/backfill_eia.py --types hubs --output data/
+
+    # Refresh current-year files (for daily ingest — re-downloads even if exists)
+    python scripts/backfill_eia.py --years 2024 --refresh --output data/
 
 EIA URL catalog: https://www.eia.gov/electricity/wholesalemarkets/data.php?rto=pjm
 """
@@ -46,6 +50,7 @@ URL_TEMPLATES = {
     "da_zones": f"{EIA_BASE}/pjm_lmp_da_hr_zones_{{year}}.csv",
     "da_hubs":  f"{EIA_BASE}/pjm_lmp_da_hr_hubs_{{year}}.csv",
     "rt_zones": f"{EIA_BASE}/pjm_lmp_rt_5min_zones_{{year}}Q{{quarter}}.csv",
+    "load":     f"{EIA_BASE}/pjm_load_act_hr_{{year}}.csv",
 }
 
 # EIA portal launched March 2024, but initial data coverage starts 2022
@@ -165,6 +170,58 @@ def normalise_rt_zones(df: pd.DataFrame) -> pd.DataFrame:
     return df
 
 
+def normalise_load(df: pd.DataFrame) -> pd.DataFrame:
+    """
+    Normalise EIA hourly load CSV to match hrl_load_metered schema.
+
+    Expected downstream columns (stg_load.sql):
+      datetime_beginning_ept, zone, load_area, mw, is_verified, nerc_region, mkt_region
+    """
+    df.columns = [c.strip().lower().replace(" ", "_").replace("-", "_") for c in df.columns]
+
+    # If it already looks like PJM API format, return as-is
+    if "datetime_beginning_ept" in df.columns and "mw" in df.columns:
+        df["source"] = "eia"
+        return df
+
+    # Flexible column mapping for varying EIA CSV formats
+    rename_map = {}
+    for col in df.columns:
+        if col in rename_map.values():
+            continue
+        if "datetime" in col or "period" in col or col in ("date", "hour"):
+            rename_map[col] = "datetime_beginning_ept"
+        elif col in ("mw", "megawatts") or ("load" in col and "mw" in col):
+            rename_map[col] = "mw"
+        elif col == "value":
+            rename_map[col] = "mw"
+        elif "zone" in col or "respondent_name" in col:
+            rename_map[col] = "zone"
+        elif "load_area" in col or col == "area":
+            rename_map[col] = "load_area"
+        elif "nerc" in col:
+            rename_map[col] = "nerc_region"
+        elif "mkt_region" in col or "market_region" in col:
+            rename_map[col] = "mkt_region"
+        elif "verified" in col:
+            rename_map[col] = "is_verified"
+
+    df = df.rename(columns=rename_map)
+
+    # Ensure required columns exist
+    for required in ["datetime_beginning_ept", "zone", "mw"]:
+        if required not in df.columns:
+            df[required] = None
+
+    # Fill optional columns
+    for optional in ["load_area", "nerc_region", "mkt_region", "is_verified"]:
+        if optional not in df.columns:
+            df[optional] = None
+
+    df["source"] = "eia"
+    return df
+
+
 def _normalise_eia_api_format(df: pd.DataFrame, price_col_suffix: str) -> pd.DataFrame:
     """Handle EIA API v2 long/wide format where value is in a 'value' column."""
     out = pd.DataFrame()
@@ -216,13 +273,17 @@ def main() -> None:
     )
     parser.add_argument(
         "--types", nargs="+",
-        choices=["zones", "hubs", "rt_zones"],
-        default=["zones", "hubs"],
-        help="Which file types to download (default: zones hubs)",
+        choices=["zones", "hubs", "rt_zones", "load"],
+        default=["zones", "hubs", "load"],
+        help="Which file types to download (default: zones hubs load)",
     )
     parser.add_argument(
         "--include-rt", action="store_true",
         help="Also download RT 5-min zone files (adds --types rt_zones)",
+    )
+    parser.add_argument(
+        "--refresh", action="store_true",
+        help="Re-download files even if they already exist (for daily ingest of current-year data)",
     )
     parser.add_argument("--output", default="data", help="Output directory")
     args = parser.parse_args()
@@ -245,7 +306,7 @@ def main() -> None:
                     out_dir.mkdir(parents=True, exist_ok=True)
                     out_file = out_dir / f"eia_{year}Q{q}.parquet"
 
-                    if out_file.exists():
+                    if out_file.exists() and not args.refresh:
                         print(f"  skip (exists): {out_file.name}")
                         continue
 
@@ -259,15 +320,36 @@ def main() -> None:
                     df.to_parquet(out_file, index=False)
                     print(f"    {len(df):,} rows → {out_file}")
 
+            elif file_type == "load":
+                # Annual load files
+                url      = URL_TEMPLATES["load"].format(year=year)
+                out_dir  = output_dir / "load"
+                out_dir.mkdir(parents=True, exist_ok=True)
+                out_file = out_dir / f"eia_load_{year}.parquet"
+
+                if out_file.exists() and not args.refresh:
+                    print(f"  skip (exists): {out_file.name}")
+                    continue
+
+                print(f"  [{year} load] {url}")
+                df = fetch_csv(url)
+                if df is None:
+                    print(f"    not available — skipping")
+                    continue
+
+                df = normalise_load(df)
+                df.to_parquet(out_file, index=False)
+                print(f"    {len(df):,} rows → {out_file}")
+
             else:
-                # Annual files
+                # Annual DA LMP files (zones / hubs)
                 url_key  = "da_zones" if file_type == "zones" else "da_hubs"
                 url      = URL_TEMPLATES[url_key].format(year=year)
                 out_dir  = output_dir / "da_lmps"
                 out_dir.mkdir(parents=True, exist_ok=True)
                 out_file = out_dir / f"eia_{file_type}_{year}.parquet"
 
-                if out_file.exists():
+                if out_file.exists() and not args.refresh:
                     print(f"  skip (exists): {out_file.name}")
                     continue
 
@@ -285,7 +367,7 @@ def main() -> None:
     print("Backfill complete.")
     print()
     print("NOTE: If column mapping looks wrong, inspect a raw CSV and update")
-    print("      normalise_da_zones() / normalise_rt_zones() in this script.")
+    print("      the normalise_*() functions in this script.")
     print(f"      EIA catalog: https://www.eia.gov/electricity/wholesalemarkets/data.php?rto=pjm")
 
 

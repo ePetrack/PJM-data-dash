@@ -1,17 +1,21 @@
-name: Ingest PJM data
+name: Ingest EIA data
+
+# Daily ingest from EIA bulk CSV downloads (no API key required).
+# Re-downloads the current year's files which EIA updates ~weekly.
+# For historical backfill of prior years, use backfill.yml instead.
 
 on:
   schedule:
-    # Every 30 minutes (PJM RT data updates every 5 min; hourly LMPs every hour)
-    - cron: "*/30 * * * *"
+    # Daily at 06:00 UTC (EIA updates ~weekly, daily is more than enough)
+    - cron: "0 6 * * *"
   workflow_dispatch:
     inputs:
-      date:
-        description: "Date to fetch (YYYY-MM-DD or 'yesterday')"
-        default: "yesterday"
-      to_date:
-        description: "End date for range fetch (optional)"
+      years:
+        description: "Space-separated years to refresh (default: current year)"
         default: ""
+      types:
+        description: "File types: zones, hubs, load, rt_zones (space-separated)"
+        default: "zones hubs load"
 
 concurrency:
   group: ingest
@@ -24,16 +28,14 @@ permissions:
 jobs:
   fetch:
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    timeout-minutes: 30
     steps:
-      # Scripts live on main
       - name: Checkout main (scripts)
         uses: actions/checkout@v4
         with:
           ref: main
           path: repo
 
-      # Data lives on the data branch — create it if this is the first run
       - name: Initialise or checkout data branch
         env:
           GH_TOKEN: ${{ github.token }}
@@ -62,17 +64,19 @@ jobs:
       - name: Install dependencies
         run: pip install requests pandas pyarrow
 
-      - name: Fetch PJM data
+      - name: Fetch EIA data (current year, refresh mode)
         run: |
-          DATE="${{ github.event.inputs.date || 'yesterday' }}"
-          TO="${{ github.event.inputs.to_date }}"
-          if [ -n "$TO" ]; then
-            python repo/scripts/fetch_pjm.py --date "$DATE" --to "$TO" --output data-branch/data/
-          else
-            python repo/scripts/fetch_pjm.py --date "$DATE" --output data-branch/data/
-          fi
-        env:
-          PJM_API_KEY: ${{ secrets.PJM_API_KEY }}   # optional — falls back to anonymous key
+          CURRENT_YEAR=$(date -u +%Y)
+          YEARS="${{ github.event.inputs.years || '' }}"
+          YEARS="${YEARS:-$CURRENT_YEAR}"
+
+          TYPES="${{ github.event.inputs.types || 'zones hubs load' }}"
+
+          python repo/scripts/backfill_eia.py \
+            --years $YEARS \
+            --types $TYPES \
+            --refresh \
+            --output data-branch/data/
 
       - name: Commit Parquet files to data branch
         working-directory: data-branch
@@ -81,7 +85,7 @@ jobs:
           git config user.email "github-actions[bot]@users.noreply.github.com"
           git add data/
           git diff --cached --quiet && echo "Nothing new to commit" && exit 0
-          git commit -m "ingest: $(date -u +%Y-%m-%dT%H:%M)Z"
+          git commit -m "ingest: EIA refresh $(date -u +%Y-%m-%d)"
           git push origin data
 
       - name: Trigger transform workflow
