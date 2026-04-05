@@ -242,6 +242,21 @@ def _normalise_eia_api_format(df: pd.DataFrame, price_col_suffix: str) -> pd.Dat
 # Download helpers
 # ---------------------------------------------------------------------------
 
+def _detect_header_row(content: bytes, max_lines: int = 20) -> int:
+    """Return the index of the most likely header row (the one with the most commas)."""
+    lines = content.split(b"\n", max_lines)[:max_lines]
+    if not lines:
+        return 0
+    best_row = 0
+    best_count = 0
+    for i, line in enumerate(lines):
+        count = line.count(b",")
+        if count > best_count:
+            best_count = count
+            best_row = i
+    return best_row
+
+
 def fetch_csv(url: str, retries: int = 3) -> pd.DataFrame | None:
     for attempt in range(retries):
         try:
@@ -249,7 +264,12 @@ def fetch_csv(url: str, retries: int = 3) -> pd.DataFrame | None:
             if resp.status_code == 404:
                 return None  # file doesn't exist yet (future year/quarter)
             resp.raise_for_status()
-            return pd.read_csv(io.BytesIO(resp.content), low_memory=False)
+            content = resp.content
+            # EIA CSVs may have metadata rows before the real CSV header.
+            header_row = _detect_header_row(content)
+            return pd.read_csv(
+                io.BytesIO(content), skiprows=header_row, low_memory=False
+            )
         except requests.RequestException as e:
             if attempt < retries - 1:
                 wait = 2 ** attempt
